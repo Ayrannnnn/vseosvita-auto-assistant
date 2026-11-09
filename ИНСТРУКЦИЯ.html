@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Всеосвіта Auto Assistant v9.4 — Инструкция по установке</title>
+    <style>
+        :root {
+            --primary: #0284c7;
+            --primary-dark: #0369a1;
+            --success: #16a34a;
+            --purple: #6366f1;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --card-border: #334155;
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 30px 20px;
+        }
+        .container {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 35px;
+            padding-bottom: 25px;
+            border-bottom: 1px solid var(--card-border);
+        }
+        .badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #0284c7, #6366f1);
+            color: white;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: var(--text-dim);
+            font-size: 15px;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 14px;
+            padding: 24px;
+            margin-bottom: 22px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 16px;
+        }
+        .step-num {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+        .step-num.success { background: var(--success); }
+        .step-num.purple { background: var(--purple); }
+        h2 {
+            font-size: 19px;
+            color: #fff;
+        }
+        p {
+            color: #cbd5e1;
+            font-size: 14.5px;
+            margin-bottom: 12px;
+        }
+        .highlight-box {
+            background: rgba(2, 132, 199, 0.1);
+            border-left: 4px solid var(--primary);
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin: 12px 0;
+            font-size: 14px;
+            color: #bae6fd;
+        }
+        .highlight-box.success {
+            background: rgba(22, 163, 74, 0.12);
+            border-left-color: var(--success);
+            color: #bbf7d0;
+        }
+        .key-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+        .feature-item {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--card-border);
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13.5px;
+        }
+        .feature-item strong {
+            display: block;
+            color: #38bdf8;
+            margin-bottom: 4px;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: var(--text-dim);
+            font-size: 13px;
+        }
+        kbd {
+            background: #334155;
+            color: #f8fafc;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            border: 1px solid #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <span class="badge">Релиз v9.4</span>
+            <h1>✦ Всеосвіта Auto Assistant</h1>
+            <p class="subtitle">Интеллектуальный помощник для тестов на Всеосвіті в 1 клик</p>
+        </header>
+
+        <!-- Шаг 1 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="step-num">1</div>
+                <h2>Запустите файл «ЗАПУСТИ МЕНЯ.bat»</h2>
+            </div>
+            <p>Дважды кликните по файлу <strong>ЗАПУСТИ МЕНЯ.bat</strong> в этой папке. Откроется компактное окно установщика с автоопределением вашего браузера (Chrome, Firefox или Edge).</p>
+            <div class="highlight-box">
+                💡 Если у вас еще не установлено бесплатное расширение Tampermonkey — нажмите кнопку <strong>«1. Установить Tampermonkey»</strong> в окне установщика, и откроется официальный магазин расширений.
+            </div>
+        </div>
+
+        <!-- Шаг 2 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="step-num success">2</div>
+                <h2>Нажмите «⚡ УСТАНОВИТЬ АССИСТЕНТ»</h2>
+            </div>
+            <p>В окне установщика нажмите большую зеленую кнопку <strong>«2. УСТАНОВИТЬ АССИСТЕНТ (1 КЛИК)»</strong>.</p>
+            <p>В вашем браузере сразу откроется страница Tampermonkey с кодом ассистента. Просто нажмите кнопку <strong>«Установить»</strong> (Install).</p>
+            <div class="highlight-box success">
+                ✨ Всё! Ассистент теперь работает во всех тестах на Всеосвіті автоматически.
+            </div>
+        </div>
+
+        <!-- Шаг 3 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="step-num purple">3</div>
+                <h2>Бесплатный ключ Gemini API</h2>
+            </div>
+            <p>Чтобы ассистент решал задания через искусственный интеллект Google Gemini:</p>
+            <ol style="margin-left: 20px; color: #cbd5e1; font-size: 14.5px; margin-bottom: 12px;">
+                <li style="margin-bottom: 6px;">В окне установщика нажмите <strong>«3. Получить бесплатный ключ Gemini»</strong> (откроется сайт Google AI Studio).</li>
+                <li style="margin-bottom: 6px;">Нажмите синюю кнопку <strong>«Create API key»</strong> и скопируйте полученный ключ.</li>
+                <li>Откройте Всеосвіту — ассистент сам покажет красивое окно, куда останется просто вставить ключ!</li>
+            </ol>
+            <p style="font-size: 13.5px; color: #94a3b8;"><em>Ключ бесплатный навсегда и выдается напрямую компанией Google для личного использования.</em></p>
+        </div>
+
+        <!-- Возможности -->
+        <div class="card">
+            <h2 style="margin-bottom: 14px;">⚡ Возможности версии 9.4:</h2>
+            <div class="key-features">
+                <div class="feature-item">
+                    <strong>100% точность соответствий</strong>
+                    Идеально решает логические пары (1-А, 2-Б, 3-В, 4-Г).
+                </div>
+                <div class="feature-item">
+                    <strong>Множественный выбор</strong>
+                    Безошибочно выбирает сразу несколько чекбоксов.
+                </div>
+                <div class="feature-item">
+                    <strong>Режим «Автопилот»</strong>
+                    Сам нажимает правильные ответы и переходит к следующему вопросу.
+                </div>
+                <div class="feature-item">
+                    <strong>Имитация человека</strong>
+                    Реалистичные паузы и задержки для полной безопасности.
+                </div>
+            </div>
+        </div>
+
+        <footer class="footer">
+            Всеосвіта Auto Assistant • Версия 9.4 • Полная поддержка Chrome, Firefox и Edge
+        </footer>
+    </div>
+</body>
+</html>

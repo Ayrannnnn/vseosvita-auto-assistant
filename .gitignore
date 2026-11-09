@@ -1,0 +1,26 @@
+# Windows & System files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.log
+
+# Archives & Temporary builds
+*.zip
+*.tar.gz
+*.7z
+dist/
+build/
+scratch/
+
+# IDE & Editor configs
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Environment & Sensitive configs
+.env
+*.local
+credentials.json
+api_key.txt
