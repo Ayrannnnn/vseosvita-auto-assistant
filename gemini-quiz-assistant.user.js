@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vseosvita Direct Gemini Assistant (Matching & Multi-Choice Fix)
 // @namespace    https://vseosvita.ua/
-// @version      9.4
+// @version      9.5
 // @description  Мгновенные ответы, умная задержка, идеальное решение соответствий (1-А, 2-Б...), множественного выбора (чекбоксы) и одиночных ответов.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -292,7 +292,7 @@
             <div id="gemini-drag-handle" style="padding: 8px 12px; background: #1e293b; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px;">
                 <div style="display: flex; align-items: center; gap: 7px;">
                     <span id="gemini-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
-                    <span style="color: #38bdf8;">✦ ВСЕОСВІТА AUTO 9.3</span>
+                    <span style="color: #38bdf8;">✦ ВСЕОСВІТА AUTO 9.5</span>
                 </div>
                 <div style="display: flex; gap: 6px;">
                     <button id="gemini-key-btn" title="Настройки API Key" style="background:none; border:none; color:#38bdf8; cursor:pointer; font-size:13px;">⚙</button>
@@ -1312,7 +1312,7 @@ ${topicContext ? `КОНТЕКСТ ТЕСТУ / ТВІР: ${topicContext}\n` : '
 ${q}`;
 
         // Каскадный запрос к моделям с автоматическим failover
-        function doRequest(modelIndex = 0) {
+        function doRequest(modelIndex = 0, retryAttempt = 0) {
             if (modelIndex >= MODELS.length) {
                 if (progressTimer) clearInterval(progressTimer);
                 isProcessing = false;
@@ -1326,9 +1326,10 @@ ${q}`;
 
             _httpRequest({
                 method: "POST",
-                url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`,
+                url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent`,
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": apiKey
                 },
                 data: JSON.stringify({
                     contents: [{ parts: [{ text: promptText }] }],
@@ -1435,15 +1436,32 @@ ${q}`;
                         }
 
                     } else {
+                        if (res.status === 429 || res.status >= 500) {
+                            if (retryAttempt < 1) {
+                                retryAttempt++;
+                                setTimeout(() => doRequest(modelIndex, retryAttempt), 2500);
+                                return;
+                            }
+                        }
                         console.warn(`Model ${currentModel} returned ${res.status}, failover to next model...`);
                         doRequest(modelIndex + 1);
                     }
                 },
                 onerror: function () {
+                    if (retryAttempt < 1) {
+                        retryAttempt++;
+                        setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
+                        return;
+                    }
                     console.warn(`Network error on model ${currentModel}, failover to next model...`);
                     doRequest(modelIndex + 1);
                 },
                 ontimeout: function () {
+                    if (retryAttempt < 1) {
+                        retryAttempt++;
+                        setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
+                        return;
+                    }
                     console.warn(`Timeout on model ${currentModel}, failover to next model...`);
                     doRequest(modelIndex + 1);
                 }

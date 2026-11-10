@@ -4,7 +4,7 @@
 
 **Интеллектуальный авто-помощник для решения тестов на платформе «Всеосвіта» на базе Google Gemini AI**
 
-[![Версия](https://img.shields.io/badge/Версия-9.4_Release-0284c7?style=for-the-badge&logo=rocket)](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
+[![Версия](https://img.shields.io/badge/Версия-9.5_Release-0284c7?style=for-the-badge&logo=rocket)](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
 [![Движок](https://img.shields.io/badge/AI_Движок-Google_Gemini-6366f1?style=for-the-badge&logo=google)](https://aistudio.google.com)
 [![Поддержка](https://img.shields.io/badge/Браузеры-Chrome_|_Firefox_|_Edge-16a34a?style=for-the-badge&logo=googlechrome)](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
 [![Лицензия](https://img.shields.io/badge/Лицензия-MIT-f59e0b?style=for-the-badge)](LICENSE)
