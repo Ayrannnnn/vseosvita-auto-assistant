@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Vseosvita Direct Gemini Assistant (Matching & Multi-Choice Fix)
+// @name         Vseosvita Direct Gemini Assistant v10.0 (Global Update)
 // @namespace    https://vseosvita.ua/
-// @version      9.5
-// @description  Мгновенные ответы, умная задержка, идеальное решение соответствий (1-А, 2-Б...), множественного выбора (чекбоксы) и одиночных ответов.
+// @version      10.0
+// @description  Global v10.0: Draggable HUD, Multi-Model, Smart Delay, Universal Question Solver (Matching, Multiple, Single, Text, Images).
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -193,6 +193,7 @@
 
     // Список сверхбыстрых моделей с каскадным переключением при сбоях Google API
     const MODELS = [
+        "gemini-2.0-flash-exp",
         "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-3.5-flash-lite"
