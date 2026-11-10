@@ -45,8 +45,8 @@
 ### Способ 2: Офлайн-установщик (Windows)
 
 Для друзей и знакомых, которым проще запустить один файл:
-1. Скачайте архив из раздела [**Releases**](https://github.com/Ayrannnnn/vseosvita-auto-assistant/releases/latest).
-2. Распакуйте архив и запустите **`ЗАПУСТИ МЕНЯ.bat`**.
+1. Скачайте готовый архив со всеми файлами [**vseosvita-auto-assistant-v9.5.zip**](https://github.com/Ayrannnnn/vseosvita-auto-assistant/releases/download/v9.5/vseosvita-auto-assistant-v9.5.zip) или из раздела [**Releases**](https://github.com/Ayrannnnn/vseosvita-auto-assistant/releases/latest).
+2. Распакуйте архив в любую папку и запустите **`ЗАПУСТИ МЕНЯ.bat`**.
 3. В открывшемся удобном окне нажмите зеленую кнопку **«2. ⚡ УСТАНОВИТЬ АССИСТЕНТ»** — вкладка установки откроется сама!
 
 ---
