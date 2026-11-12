@@ -72,6 +72,21 @@ function loadNaurokLetterMatcher() {
     return context.exports.findOptionIndexByLetter;
 }
 
+function loadRetryPolicy() {
+    const source = readScript();
+    const start = source.indexOf('function shouldRetryGeminiRequest(');
+    const end = source.indexOf('\n    }', start);
+    assert.notEqual(start, -1, 'Gemini retry policy exists');
+    assert.notEqual(end, -1, 'Gemini retry policy has an end marker');
+
+    const context = {};
+    vm.runInNewContext(
+        `${source.slice(start, end + 6)}\nthis.exports = { shouldRetryGeminiRequest };`,
+        context
+    );
+    return context.exports.shouldRetryGeminiRequest;
+}
+
 function textNode(text) {
     return { innerText: text, textContent: text };
 }
@@ -173,4 +188,23 @@ test('inactive or incomplete Naurok pages are not treated as active questions', 
     const captureNaurokQuestion = loadNaurokCapture();
     assert.equal(captureNaurokQuestion(null), null);
     assert.equal(captureNaurokQuestion(naurokGame('Вопрос', [['A', '1']])), null);
+});
+
+test('model cascade uses the documented stable Gemini 3.1 Flash-Lite ID', () => {
+    const match = readScript().match(/const DEFAULT_MODELS = \[([\s\S]*?)\];/);
+    assert.ok(match, 'default Gemini models are declared');
+    const models = Array.from(match[1].matchAll(/"([^"]+)"/g), item => item[1]);
+
+    assert.ok(models.includes('gemini-3.1-flash-lite'));
+    assert.ok(!models.includes('gemini-3.1-flash-lite-preview'));
+});
+
+test('Gemini requests do not retry after a timeout but do retry transient failures once', () => {
+    const shouldRetryGeminiRequest = loadRetryPolicy();
+
+    assert.equal(shouldRetryGeminiRequest('timeout', 0), false);
+    assert.equal(shouldRetryGeminiRequest('network', 0), true);
+    assert.equal(shouldRetryGeminiRequest(429, 0), true);
+    assert.equal(shouldRetryGeminiRequest(503, 0), true);
+    assert.equal(shouldRetryGeminiRequest(503, 1), false);
 });

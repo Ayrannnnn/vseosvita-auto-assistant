@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Vseosvita + Naurok.ua AI Assistant
 // @namespace    https://vseosvita.ua/
-// @version      10.5
-// @description  Помощник v10.5 для Всеосвіти та naurok.ua через Google Gemini.
+// @version      10.5.1
+// @description  Помощник v10.5.1 для Всеосвіти та naurok.ua через Google Gemini.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -63,7 +63,6 @@
     // Проверенные модели Gemini с каскадным переключением при сбоях и лимитах.
     const DEFAULT_MODELS = [
         "gemini-3.1-flash-lite",
-        "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
         "gemini-2.5-pro"
@@ -75,6 +74,11 @@
             return [...DEFAULT_MODELS];
         }
         return [pref, ...DEFAULT_MODELS.filter(m => m !== pref)];
+    }
+
+    function shouldRetryGeminiRequest(status, retryAttempt) {
+        if (retryAttempt >= 1 || status === 'timeout') return false;
+        return status === 'network' || status === 429 || (typeof status === 'number' && status >= 500);
     }
 
     // Запрос к Google Gemini API.
@@ -204,7 +208,7 @@
             card.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <div style="font-weight:bold; font-size:14px; color:#38bdf8; display:flex; align-items:center; gap:6px;">
-                        <span>✦</span> ВСЕОСВІТА + НА УРОК v10.5
+                        <span>✦</span> ВСЕОСВІТА + НА УРОК v10.5.1
                     </div>
                     <button id="vse-studio-close" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:16px;">✕</button>
                 </div>
@@ -484,7 +488,7 @@
             <div id="gemini-drag-handle" style="padding: 8px 10px; background: #1e293b; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; gap: 8px;">
                 <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
                     <span id="gemini-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
-                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА · НА УРОК v10.5</span>
+                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА · НА УРОК v10.5.1</span>
                     <span id="gemini-model-badge" style="font-size: 10px; color: #94a3b8; font-weight: normal; white-space: nowrap;"></span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
@@ -755,7 +759,7 @@
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span style="font-size:18px;">⚙</span>
-                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.5</span>
+                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.5.1</span>
                 </div>
                 <button id="gemini-modal-close-btn" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1;">✕</button>
             </div>
@@ -2451,17 +2455,17 @@ ${q}`;
                                 }
                             }
 
-                            if ((res.status === 429 || res.status >= 500) && retryAttempt < 1) {
+                            if (shouldRetryGeminiRequest(res.status, retryAttempt)) {
                                 retryAttempt++;
                                 setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
                                 return;
                             }
-                            console.warn(`[Quiz Assistant v10.5] Model ${currentModel} returned ${res.status}, failover...`);
+                            console.warn(`[Quiz Assistant v10.5.1] Model ${currentModel} returned ${res.status}, failover...`);
                             doRequest(modelIndex + 1, 0);
                         }
                     },
                     onerror: function () {
-                        if (retryAttempt < 1) {
+                        if (shouldRetryGeminiRequest('network', retryAttempt)) {
                             retryAttempt++;
                             setTimeout(() => doRequest(modelIndex, retryAttempt), 1500);
                             return;
@@ -2469,17 +2473,13 @@ ${q}`;
                         doRequest(modelIndex + 1, 0);
                     },
                     ontimeout: function () {
-                        if (retryAttempt < 1) {
-                            retryAttempt++;
-                            setTimeout(() => doRequest(modelIndex, retryAttempt), 1500);
-                            return;
-                        }
+                        console.warn(`[Quiz Assistant v10.5.1] Request timed out on ${currentModel}; trying next model.`);
                         doRequest(modelIndex + 1, 0);
                     }
                     }
                 ));
             } catch (reqErr) {
-                console.warn(`[Quiz Assistant v10.5] Request exception on ${currentModel}:`, reqErr);
+                console.warn(`[Quiz Assistant v10.5.1] Request exception on ${currentModel}:`, reqErr);
                 doRequest(modelIndex + 1, 0);
             }
         }
@@ -2503,7 +2503,7 @@ ${q}`;
                     await applyAutoAnswer(parsed);
                 }
             } catch (clickErr) {
-                console.error("[Quiz Assistant v10.5] Auto-click error:", clickErr);
+                console.error("[Quiz Assistant v10.5.1] Auto-click error:", clickErr);
             }
 
             if (autoAdvanceNext && autopilotEnabled) {

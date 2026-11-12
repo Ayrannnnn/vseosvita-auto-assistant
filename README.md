@@ -1,15 +1,15 @@
 <div align="center">
 
-# ✦ Всеосвіта + На Урок Auto Assistant v10.5
+# ✦ Всеосвіта + На Урок Auto Assistant v10.5.1
 
 **Пользовательский скрипт для вопросов на платформах «Всеосвіта» и «На Урок»: анализ текста, формул и изображений через Google Gemini.**
 
-[![Версия](https://img.shields.io/badge/Версия-v10.5-0284c7?style=for-the-badge&logo=rocket)](CHANGELOG.md)
+[![Версия](https://img.shields.io/badge/Версия-v10.5.1-0284c7?style=for-the-badge&logo=rocket)](CHANGELOG.md)
 [![AI](https://img.shields.io/badge/AI-Google_Gemini-6366f1?style=for-the-badge&logo=googlegemini)](https://aistudio.google.com/)
 [![Установка](https://img.shields.io/badge/Tampermonkey-установить-00485b?style=for-the-badge&logo=tampermonkey)](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)
 [![Лицензия](https://img.shields.io/badge/Лицензия-MIT-f59e0b?style=for-the-badge)](LICENSE)
 
-[Українська версія](README_UA.md) · [Установить](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js) · [Изменения v10.5](CHANGELOG.md) · [Исходный код](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
+[Українська версія](README_UA.md) · [Установить](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js) · [Изменения v10.5.1](CHANGELOG.md) · [Исходный код](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
 
 </div>
 
@@ -20,12 +20,13 @@
 
 На Naurok обработчик ограничен активным тестом (`#tb-app[data-mode="play"] .tb-game`). Проверен DOM-вариант, приложенный пользователем; текстовые поля, сортировка и другие интерактивные типы на сайте пока не подтверждены.
 
-## Что нового в v10.5
+## Что нового в v10.5.1
 
 - Добавлены захват вопроса и выбор варианта ответа для активного теста Naurok по его разметке.
 - Для одиночного выбора помощник показывает метку и значение отдельно: `Вариант B (значение: 2)`; на Naurok учитываются латинские метки кнопок.
 - Удалена поддержка OpenRouter; запросы и резервные модели используют только Google Gemini.
 - Исправлена проверка нового ключа Gemini: теперь тестируется именно введённый ключ.
+- После тайм-аута запрос сразу переключается на резервную модель.
 
 ### Возможности v10.3
 
@@ -40,7 +41,7 @@
 ## Установка
 
 1. Установите [Tampermonkey для Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo), [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/) или [Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd).
-2. Откройте **[установочный файл v10.5](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)** и подтвердите установку в Tampermonkey.
+2. Откройте **[установочный файл v10.5.1](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)** и подтвердите установку в Tampermonkey.
 3. Откройте [Всеосвіту](https://vseosvita.ua/) или [На Урок](https://naurok.ua/), нажмите `⚙️ НАСТРОЙКИ` и добавьте ключ Google Gemini из [AI Studio](https://aistudio.google.com/app/apikey). На Naurok дождитесь активного вопроса с вариантами-кнопками.
 
 Для ручной установки скачайте [актуальный архив исходников](https://github.com/Ayrannnnn/vseosvita-auto-assistant/archive/refs/heads/main.zip), распакуйте его и откройте `gemini-quiz-assistant.user.js` через Tampermonkey.
