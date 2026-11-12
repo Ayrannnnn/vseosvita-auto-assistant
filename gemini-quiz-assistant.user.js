@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vseosvita Direct Gemini Assistant
 // @namespace    https://vseosvita.ua/
-// @version      10.1
+// @version      10.3
 // @description  Авто-помощник v10.1 для Всеосвіти: Draggable HUD 2.0, мультимодальный анализ изображений, все типы вопросов (одиночный, мультивыбор, соответствия, последовательности, ввод текста), локальный кэш, умная задержка и мульти-модельный Failover 2.0.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -14,6 +14,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @connect      generativelanguage.googleapis.com
+// @connect      openrouter.ai
 // @connect      *
 // @run-at       document-end
 // ==/UserScript==
@@ -61,6 +62,17 @@
 
     // Проверенные рабочие модели Gemini 2026 с каскадным переключением (Failover 2.0)
     const DEFAULT_MODELS = [
+        // OpenRouter (первичный провайдер): валидные ID каталога OpenRouter
+        "openrouter/free",
+        "google/gemini-3.7-flash",
+        "google/gemini-2.5-flash",
+        // Резервная цепочка OpenRouter (правила бригады при 429/лимитах)
+        "z-ai/glm-5.3-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "nvidia/nemotron-3.5-lightning:free",
+        "minimax/minimax-m3.1-flash",
+        "xiaomi/mimo-v2.6-flash",
+        // Fallback на нативный Gemini API
         "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash-lite",
@@ -76,14 +88,113 @@
         return [pref, ...DEFAULT_MODELS.filter(m => m !== pref)];
     }
 
+    // Выбор провайдера: модели со слэшем в имени (openrouter/free, google/..., z-ai/...) идут через OpenRouter
+    function isOpenRouterModel(m) {
+        return typeof m === 'string' && m.indexOf('/') !== -1;
+    }
+
+    // Построение провайдер-зависимого запроса: Gemini (contents/parts) или OpenRouter (messages/content)
+    function buildProviderRequest(model, promptText, images, keyOverride) {
+        const useKey = (keyOverride || apiKey).trim();
+        if (isOpenRouterModel(model)) {
+            const content = [{ type: "text", text: promptText }];
+            for (const img of images) {
+                content.push({ type: "image_url", image_url: { url: img.inlineData ? `data:${img.inlineData.mimeType};base64,${img.inlineData.data}` : (img.imageUrl || img) } });
+            }
+            return {
+                url: "https://openrouter.ai/api/v1/chat/completions",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${useKey}`
+                },
+                data: JSON.stringify(Object.assign({
+                    model: model,
+                    messages: [{ role: "user", content: content }],
+                    temperature: 0.1,
+                    max_tokens: cotModeEnabled ? 8192 : 2048
+                }, cotModeEnabled ? { reasoning: { effort: "high" } } : {}))
+            };
+        }
+        return {
+            url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": apiKey.trim()
+            },
+            data: JSON.stringify(Object.assign({
+                contents: [{ parts: [{ text: promptText }, ...images] }],
+                generationConfig: Object.assign({
+                    temperature: 0.1,
+                    maxOutputTokens: cotModeEnabled ? 8192 : 1024
+                }, cotModeEnabled ? { thinkingConfig: { thinkingBudget: 4096, includeThoughts: false } } : {})
+            }))
+        };
+    }
+
+    // Разбор ответа провайдера в единый текст (Gemini candidates/parts или OpenAI choices/message/content).
+    // Устойчив к Markdown-обёрткам ```json ... ``` и мусору вокруг JSON (баг №1 из QA-аудита).
+    function extractAnswerFromResponse(responseText) {
+        let data = null;
+        try {
+            data = JSON.parse(responseText);
+        } catch (e) {
+            // Фоллбэк 1: снимаем Markdown-обёртку
+            const fence = String(responseText).match(/```(?:json)?\s*([\s\S]*?)```/i);
+            const candidate = fence && fence[1] ? fence[1] : String(responseText);
+            // Фоллбэк 2: вырезаем первый сбалансированный {...} или [...]
+            const brace = candidate.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+            if (brace) {
+                try { data = JSON.parse(brace[1]); } catch (e2) {}
+            }
+            if (!data) throw new Error('non-json response');
+        }
+
+        // OpenAI-совместимый формат (OpenRouter)
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            const msg = data.choices[0].message;
+            let content = msg.content;
+            if (Array.isArray(content)) {
+                // content-части: {type:"text", text:"..."}
+                const texts = content.filter(p => p && p.type === 'text' && p.text).map(p => p.text);
+                if (texts.length > 0) return texts.join('\n').trim();
+                content = '';
+            }
+            let ans = String(content || '').trim();
+            // Некоторые reasoning-модели возвращают пустой content и текст в reasoning
+            if (!ans && msg.reasoning) {
+                const lines = String(msg.reasoning).trim().split(/\n+/).filter(Boolean);
+                for (let i = lines.length - 1; i >= 0; i--) {
+                    const m = lines[i].match(/(?:відповідь|ответ|answer)[:\s]*([А-ЯЄІЇA-Za-z0-9ІІІІІVХ]{1,4}[\)\.].{0,80}|[А-ЯЄІЇA-Z](?:,\s*[А-ЯЄІЇA-Z])*$|\d+\s*-\s*[А-ЯЄІЇA-Z](?:[\s,]+\d+\s*-\s*[А-ЯЄІЇA-Z])*)/i);
+                    if (m) { ans = m[1].trim(); break; }
+                }
+                if (!ans) ans = lines[lines.length - 1] || '';
+            }
+            return ans;
+        }
+
+        // Нативный Gemini
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        let rawAnswer = "";
+        for (const p of parts) {
+            if (!p.thought && p.text) rawAnswer += p.text;
+        }
+        if (!rawAnswer && parts.length > 0) {
+            rawAnswer = parts[parts.length - 1].text || "";
+        }
+        return String(rawAnswer || '').trim();
+    }
+
     // Проверка рабочего API-ключа с перебором моделей и защитой через заголовок x-goog-api-key
     function testGeminiKey(keyToTest, callback) {
         if (!keyToTest || keyToTest.trim().length < 20) {
-            callback(false, "Ключ слишком короткий (должен начинаться на AIza...)");
+            callback(false, "Ключ слишком короткий (AIza... или sk-or-...)");
             return;
         }
         const cleanKey = keyToTest.trim();
-        const checkModels = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+        const isOrKey = cleanKey.indexOf('sk-or-') === 0;
+        const checkModels = isOrKey
+            ? ["openrouter/free", "google/gemini-2.5-flash", "z-ai/glm-5.3-flash"]
+            : ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
 
         function tryCheck(idx) {
             if (idx >= checkModels.length) {
@@ -91,19 +202,12 @@
                 return;
             }
             const m = checkModels[idx];
-            _httpRequest({
-                method: "POST",
-                url: `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
-                headers: {
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": cleanKey
-                },
-                data: JSON.stringify({
-                    contents: [{ parts: [{ text: "ping" }] }],
-                    generationConfig: { maxOutputTokens: 5 }
-                }),
-                timeout: 8000,
-                onload: function (res) {
+            _httpRequest(Object.assign(
+                buildProviderRequest(m, "ping", [], cleanKey),
+                {
+                    method: "POST",
+                    timeout: 8000,
+                    onload: function (res) {
                     if (res.status >= 200 && res.status < 300) {
                         callback(true, `OK (${m})`);
                         return;
@@ -124,9 +228,10 @@
                     callback(false, "Ошибка сети. Проверьте интернет соединение.");
                 },
                 ontimeout: function () {
-                    callback(false, "Таймаут соединения с Google API (8 сек).");
+                    callback(false, "Таймаут соединения с API (8 сек).");
                 }
-            });
+                }
+            ));
         }
         tryCheck(0);
     }
@@ -256,6 +361,7 @@
     let smartDelayEnabled = _getValue("SMART_DELAY_ENABLED", true);
     let delayProfile = _getValue("DELAY_PROFILE", "smart"); // 'smart' | 'fast' | 'none'
     let localCacheEnabled = _getValue("LOCAL_CACHE_ENABLED", true);
+    let cotModeEnabled = _getValue("COT_MODE_ENABLED", false); // Chain-of-Thought режим
     let preferredModel = _getValue("PREFERRED_MODEL", "auto");
     let hudMinimized = _getValue("HUD_MINIMIZED", false);
     let hudPos = _getValue("HUD_POS", null);
@@ -292,7 +398,11 @@
     // Очистка ответа от лишних вводных фраз и форматирования
     function sanitizeAnswer(rawText) {
         if (!rawText) return "";
-        return rawText
+        let s = String(rawText);
+        // Снимаем Markdown-обёртку ```json ... ``` / ``` ... ``` (edge case Тестировщика)
+        const fence = s.match(/```(?:json|md|markdown)?\s*([\s\S]*?)```/i);
+        if (fence && fence[1] && fence[1].trim()) s = fence[1];
+        s = s
             .replace(/^Відповідь:\s*/i, '')
             .replace(/^Ответ:\s*/i, '')
             .replace(/^Правильна відповідь:\s*/i, '')
@@ -302,6 +412,7 @@
             .split(/\n?пояснення:/i)[0]
             .replace(/[*_`]/g, '')
             .trim();
+        return s;
     }
 
     // Разблокировка выделения и копирования
@@ -715,7 +826,7 @@
                 <span>🌐</span> Получить ключ в Google AI Studio
             </a>
             <div style="display:flex; gap:6px; margin-bottom:14px;">
-                <input id="gemini-modal-input" type="password" placeholder="AIzaSy..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:6px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
+                <input id="gemini-modal-input" type="password" placeholder="AIza... или sk-or-..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:6px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
                 <button id="gemini-modal-toggle-eye" title="Показать/скрыть" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">👁</button>
                 <button id="gemini-modal-paste-btn" title="Вставить из буфера" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
             </div>
@@ -724,11 +835,16 @@
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
                     <span style="color:#cbd5e1;">Модель AI:</span>
                     <select id="gemini-modal-model" style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:6px; padding:5px 8px; font-size:12px;">
-                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (Failover 3.1 → 2.5)</option>
-                        <option value="gemini-3.1-flash-lite" ${preferredModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite</option>
-                        <option value="gemini-2.5-flash-lite" ${preferredModel === 'gemini-2.5-flash-lite' ? 'selected' : ''}>gemini-2.5-flash-lite</option>
-                        <option value="gemini-2.5-flash" ${preferredModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash</option>
-                        <option value="gemini-2.5-pro" ${preferredModel === 'gemini-2.5-pro' ? 'selected' : ''}>gemini-2.5-pro</option>
+                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (OpenRouter → Gemini failover)</option>
+                        <option value="openrouter/free" ${preferredModel === 'openrouter/free' ? 'selected' : ''}>openrouter/free (роутер бесплатных)</option>
+                        <option value="google/gemini-3.7-flash" ${preferredModel === 'google/gemini-3.7-flash' ? 'selected' : ''}>google/gemini-3.7-flash</option>
+                        <option value="z-ai/glm-5.3-flash" ${preferredModel === 'z-ai/glm-5.3-flash' ? 'selected' : ''}>z-ai/glm-5.3-flash</option>
+                        <option value="deepseek/deepseek-v4.1-flash" ${preferredModel === 'deepseek/deepseek-v4.1-flash' ? 'selected' : ''}>deepseek/deepseek-v4.1-flash</option>
+                        <option value="nvidia/nemotron-3.5-lightning:free" ${preferredModel === 'nvidia/nemotron-3.5-lightning:free' ? 'selected' : ''}>nvidia/nemotron-3.5-lightning:free</option>
+                        <option value="minimax/minimax-m3.1-flash" ${preferredModel === 'minimax/minimax-m3.1-flash' ? 'selected' : ''}>minimax/minimax-m3.1-flash</option>
+                        <option value="xiaomi/mimo-v2.6-flash" ${preferredModel === 'xiaomi/mimo-v2.6-flash' ? 'selected' : ''}>xiaomi/mimo-v2.6-flash</option>
+                        <option value="gemini-3.1-flash-lite" ${preferredModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (нативный)</option>
+                        <option value="gemini-2.5-flash" ${preferredModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash (нативный)</option>
                     </select>
                 </div>
 
@@ -747,6 +863,19 @@
                         <span>Кэш ответов (<span id="gemini-cache-count">${getCacheCount()}</span>)</span>
                     </label>
                     <button id="gemini-modal-clear-cache" style="background:#334155; color:#f87171; border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:bold;">🗑 Очистить</button>
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:4px; border-top:1px solid #334155;">
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin:0;" title="Пошаговое рассуждение модели: выше точность на сложных вопросах, медленнее">
+                        <input type="checkbox" id="gemini-modal-cot-chk" ${cotModeEnabled ? 'checked' : ''}>
+                        <span>🧠 Chain-of-Thought режим</span>
+                    </label>
+                    <span style="font-size:10px; color:#64748b;">точнее, но медленнее</span>
+                </div>
+
+                <div style="display:flex; gap:8px; padding-top:4px; border-top:1px solid #334155;">
+                    <button id="gemini-modal-export-btn" style="flex:1; background:#1e40af; color:#fff; border:none; border-radius:5px; padding:6px; font-size:11px; font-weight:bold; cursor:pointer;">📤 Экспорт кэша</button>
+                    <button id="gemini-modal-import-btn" style="flex:1; background:#7c2d12; color:#fff; border:none; border-radius:5px; padding:6px; font-size:11px; font-weight:bold; cursor:pointer;">📥 Импорт кэша</button>
                 </div>
             </div>
 
@@ -776,6 +905,9 @@
         const delaySel = modal.querySelector('#gemini-modal-delay-profile');
         const cacheChk = modal.querySelector('#gemini-modal-cache-chk');
         const clearCacheBtn = modal.querySelector('#gemini-modal-clear-cache');
+        const cotChk = modal.querySelector('#gemini-modal-cot-chk');
+        const exportBtn = modal.querySelector('#gemini-modal-export-btn');
+        const importBtn = modal.querySelector('#gemini-modal-import-btn');
 
         eyeBtn.onclick = () => { inp.type = inp.type === 'password' ? 'text' : 'password'; };
 
@@ -800,6 +932,21 @@
             status.style.color = '#4ade80';
             status.innerText = '🗑 Локальный кэш очищен!';
         };
+
+        cotChk.onchange = () => {
+            cotModeEnabled = cotChk.checked;
+            _setValue("COT_MODE_ENABLED", cotModeEnabled);
+            status.style.color = '#4ade80';
+            status.innerText = cotModeEnabled ? '🧠 CoT включён' : 'CoT выключен';
+        };
+
+        exportBtn.onclick = () => {
+            if (exportHistory()) {
+                status.style.color = '#4ade80';
+                status.innerText = `📤 Экспортировано ${getCacheCount()} ответов`;
+            }
+        };
+        importBtn.onclick = () => pickImportFile();
 
         saveBtn.onclick = () => {
             preferredModel = modelSel.value;
@@ -952,6 +1099,85 @@
         return [];
     }
 
+    // ==================== MATHJAX / LATEX / SVG ====================
+
+    // Сбор математических формул (MathJax/LaTeX) из области вопроса:
+    // TeX-аннотации MathJax, alttext у <math>, data-formula/alt у картинок формул
+    function collectMathText(rootElements) {
+        const hudEl = document.getElementById('gemini-direct-hud');
+        const modalEl = document.getElementById('gemini-key-modal');
+        const outside = el => el && (!hudEl || !hudEl.contains(el)) && (!modalEl || !modalEl.contains(el));
+        const formulas = new Set();
+
+        for (const root of (rootElements || []).filter(Boolean)) {
+            // 1. MathJax v3: TeX-аннотация внутри mjx-container
+            root.querySelectorAll('mjx-container annotation[encoding="application/x-tex"], math annotation[encoding="application/x-tex"]').forEach(a => {
+                const tex = (a.textContent || '').trim();
+                if (tex) formulas.add(tex);
+            });
+            // 2. MathML <math alttext="...">
+            root.querySelectorAll('math[alttext]').forEach(m => {
+                const tex = (m.getAttribute('alttext') || '').trim();
+                if (tex) formulas.add(tex);
+            });
+            // 3. Картинки формул с data-formula / LaTeX в alt
+            root.querySelectorAll('img[data-formula], img[data-latex], span[data-formula]').forEach(el => {
+                const tex = (el.getAttribute('data-formula') || el.getAttribute('data-latex') || '').trim();
+                if (tex) formulas.add(tex);
+            });
+            root.querySelectorAll('img[alt]').forEach(img => {
+                const alt = (img.getAttribute('alt') || '').trim();
+                if (/\\(frac|sqrt|int|sum|lim|left|right|cdot|times|pi|alpha|beta|gamma|le|ge|neq)/.test(alt)) formulas.add(alt);
+            });
+        }
+
+        if (formulas.size === 0) return '';
+        const lines = Array.from(formulas).slice(0, 12).map((f, i) => `Формула ${i + 1} (LaTeX): ${f}`);
+        return `\n\nМАТЕМАТИЧНІ ФОРМУЛИ ПИТАННЯ (у форматі LaTeX):\n${lines.join('\n')}`;
+    }
+
+    // Сериализация inline-SVG в data-URL (для растеризации через canvas)
+    function svgToDataUrl(svgEl) {
+        try {
+            const clone = svgEl.cloneNode(true);
+            const w = parseFloat(svgEl.getAttribute('width') || svgEl.viewBox?.baseVal?.width || svgEl.getBoundingClientRect().width || 0);
+            const h = parseFloat(svgEl.getAttribute('height') || svgEl.viewBox?.baseVal?.height || svgEl.getBoundingClientRect().height || 0);
+            if (!w || !h || w < 32 || h < 32) return null; // отсекаем иконки
+            clone.setAttribute('width', w);
+            clone.setAttribute('height', h);
+            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            const xml = new XMLSerializer().serializeToString(clone);
+            return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(xml)))}`;
+        } catch (e) { return null; }
+    }
+
+    // Растеризация SVG data-URL в PNG base64 (графики и схемы в SVG не теряются)
+    function rasterizeSvgDataUrl(dataUrl) {
+        return new Promise((resolve) => {
+            try {
+                const img = new Image();
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const scale = Math.min(2, Math.max(1, 800 / Math.max(img.width, img.height)));
+                        canvas.width = Math.round(img.width * scale);
+                        canvas.height = Math.round(img.height * scale);
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height); // прозрачный фон → белый
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        const png = canvas.toDataURL('image/png');
+                        const m = png.match(/^data:(image\/png);base64,(.+)$/);
+                        if (m) resolve({ mimeType: m[1], data: m[2] });
+                        else resolve(null);
+                    } catch (e) { resolve(null); }
+                };
+                img.onerror = () => resolve(null);
+                img.src = dataUrl;
+            } catch (e) { resolve(null); }
+        });
+    }
+
     // Поиск подходящих изображений в области вопроса и вариантов
     function collectContentImages(rootElements) {
         const hudEl = document.getElementById('gemini-direct-hud');
@@ -981,6 +1207,18 @@
                 urls.push(src);
                 if (urls.length >= 4) return urls;
             }
+
+            // Графики и схемы, отрисованные в inline-SVG (не <img>)
+            const svgs = Array.from(root.querySelectorAll('svg')).filter(s =>
+                !hudEl.contains(s) && !s.closest('#gemini-key-modal')
+            );
+            for (const svg of svgs) {
+                const dataUrl = svgToDataUrl(svg);
+                if (!dataUrl || seen.has(dataUrl)) continue;
+                seen.add(dataUrl);
+                urls.push(dataUrl);
+                if (urls.length >= 4) return urls;
+            }
         }
         return urls;
     }
@@ -988,6 +1226,7 @@
     // Конвертация картинки в base64 с обходом CORS через GM_xmlhttpRequest
     function fetchImageAsBase64(url) {
         return new Promise((resolve) => {
+            (async () => {
             try {
                 if (!url) { resolve(null); return; }
 
@@ -997,11 +1236,39 @@
                         resolve({ mimeType: match[1], data: match[2] });
                         return;
                     }
+                    // SVG data-URL → растеризуем в PNG через canvas
+                    if (match && match[1].includes('svg')) {
+                        resolve(await rasterizeSvgDataUrl(url));
+                        return;
+                    }
                     resolve(null);
                     return;
                 }
 
                 if (url.toLowerCase().includes('.svg')) {
+                    // Удалённый SVG: скачиваем текст, сериализуем в data-URL, растеризуем
+                    if (typeof GM_xmlhttpRequest !== 'undefined') {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: url,
+                            responseType: 'text',
+                            timeout: 6000,
+                            onload: async function (res) {
+                                if (res.status >= 200 && res.status < 300 && res.responseText) {
+                                    try {
+                                        const xml = String(res.responseText);
+                                        const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(xml)))}`;
+                                        resolve(await rasterizeSvgDataUrl(dataUrl));
+                                        return;
+                                    } catch (e) {}
+                                }
+                                resolve(null);
+                            },
+                            onerror: () => resolve(null),
+                            ontimeout: () => resolve(null)
+                        });
+                        return;
+                    }
                     resolve(null);
                     return;
                 }
@@ -1058,6 +1325,7 @@
                 }
             } catch (e) {}
             resolve(null);
+            })();
         });
     }
 
@@ -1125,7 +1393,7 @@
 
         // Проверка типа: Соответствие (Matching)
         const crossWrap = document.querySelector('.v-block-answers-cross-wrapper, .v-cross-wrap, .question-match-quest_container, .n-cross-wrap-kahhot, .v-block-answers-cross');
-        const selects = Array.from(document.querySelectorAll('select, .v-test-questions-select-block select')).filter(el => isOutsideHUD(el) && isVisibleElement(el));
+        const selects = Array.from(document.querySelectorAll('select, .v-test-questions-select-block select')).filter(el => isOutsideHUD(el) && isVisibleElement(el) && !el.closest('header, nav, .search, #search, .lang-switch'));
         const sortItems = Array.from(document.querySelectorAll('.v-sort-item, .ui-sortable-handle, [class*="sort-item"], [data-sort]')).filter(el => isOutsideHUD(el) && isVisibleElement(el));
 
         const combinedLower = (qTitle + " " + (mainContainer ? extractCleanText(mainContainer) : "")).toLowerCase();
@@ -1136,13 +1404,15 @@
         let options = findOptionElements(mainContainer);
         options.forEach(o => { if (o.el) imageRoots.push(o.el); });
         const imageUrls = collectContentImages(imageRoots);
+        // Формулы MathJax/LaTeX из области вопроса добавляем в текст задания
+        const mathBlock = collectMathText(imageRoots);
 
         // А) Соответствие (Matching cross-wrapper или selects/matrix)
         if (crossWrap && isOutsideHUD(crossWrap) && isVisibleElement(crossWrap)) {
             const wrapTxt = extractCleanText(crossWrap);
             if (wrapTxt.length > 4) {
                 const title = qTitle || "Встановіть відповідність:";
-                const body = `${title}\n\n${wrapTxt}`;
+                const body = `${title}\n\n${wrapTxt}${mathBlock}`;
                 return {
                     qType: isOrderingHint ? 'ordering' : 'matching',
                     questionText: title,
@@ -1165,7 +1435,7 @@
                 selectSummary += `${idx + 1}. ${rowTxt || `Елемент ${idx + 1}`}` + (idx === 0 && optList.length ? `\nВаріанти вибору:\n${optList.join('\n')}` : '') + `\n`;
             });
             const title = qTitle || (isOrderingHint ? "Встановіть правильну послідовність:" : "Встановіть відповідність:");
-            const body = `${title}\n\n${selectSummary.trim()}`;
+            const body = `${title}\n\n${selectSummary.trim()}${mathBlock}`;
             return {
                 qType: isOrderingHint ? 'ordering' : 'matching',
                 questionText: title,
@@ -1179,7 +1449,7 @@
         if (sortItems.length >= 2 || (isOrderingHint && options.length >= 2)) {
             const list = sortItems.length >= 2 ? sortItems.map((el, i) => ({ el, text: extractCleanText(el) })) : options;
             const lines = list.map((o, i) => `${LETTERS_CYR[i] || (i + 1)}) ${o.text.replace(/^[А-ЯA-Z0-9][\)\.]\s*/, '')}`);
-            const body = `${qTitle || "Розташуйте в правильній послідовності:"}\n\nЕлементи:\n${lines.join('\n')}`;
+            const body = `${qTitle || "Розташуйте в правильній послідовності:"}\n\nЕлементи:\n${lines.join('\n')}${mathBlock}`;
             return {
                 qType: 'ordering',
                 questionText: qTitle || body,
@@ -1212,7 +1482,7 @@
                 stem = (clone.textContent || "").replace(/\s+/g, ' ').trim();
             }
 
-            const body = `${stem ? stem + "\n\n" : ""}Варіанти відповідей:\n${formattedOpts.join('\n')}`;
+            const body = `${stem ? stem + "\n\n" : ""}Варіанти відповідей:\n${formattedOpts.join('\n')}${mathBlock}`;
             return {
                 qType: hasCheckboxes ? 'multiple' : 'single',
                 questionText: stem || body,
@@ -1230,7 +1500,7 @@
             return {
                 qType: 'text',
                 questionText: qTitle,
-                formattedBody: qTitle,
+                formattedBody: qTitle + mathBlock,
                 signature: (qTitle + "|text|" + imageUrls.join(',')).replace(/\s+/g, ' '),
                 imageUrls
             };
@@ -1245,7 +1515,7 @@
                 return {
                     qType: textInputs.length > 0 ? 'text' : 'auto',
                     questionText: qTitle || txt,
-                    formattedBody: txt,
+                    formattedBody: txt + mathBlock,
                     signature: (txt + "|" + imageUrls.join(',')).replace(/\s+/g, ' '),
                     imageUrls
                 };
@@ -1437,6 +1707,12 @@
         let idx = LETTERS_CYR.indexOf(lettr);
         if (idx === -1) idx = LETTERS_LAT.indexOf(lettr);
         if (idx === -1 && /^[1-9]$/.test(lettr)) idx = parseInt(lettr, 10) - 1;
+        if (idx === -1) {
+            // Римская нумерация вариантов (I–X), частая в 5+ вариантах
+            const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+            const ri = ROMAN.indexOf(lettr);
+            if (ri !== -1) idx = ri;
+        }
         if (idx >= 0 && idx < options.length) {
             return idx;
         }
@@ -1481,11 +1757,112 @@
         return null;
     }
 
-    function handleTextInput(answerText) {
+    // Select'ы строго внутри блока вопроса (защита от фильтров/языковых select страницы)
+    function getQuestionSelects(hudEl) {
+        const visible = el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el);
+        const containers = document.querySelectorAll('.v-test-container, .v-block-test, form.test-form, .question-item, .v-block-answers-cross-wrapper, .v-cross-wrap, .v-test-questions-select-block');
+        const scoped = [];
+        for (const c of containers) {
+            scoped.push(...Array.from(c.querySelectorAll('select')).filter(visible));
+        }
+        if (scoped.length > 0) return scoped;
+        return Array.from(document.querySelectorAll('select')).filter(el => visible(el) && !el.closest('header, nav, .search, #search, .v-header, .lang-switch'));
+    }
+
+    // Эмуляция jQuery UI sortable drag-and-drop (ordering): pointer/mouse события,
+    // ui-sortable слушает именно события мыши, а не порядок DOM
+    function dragSortableItem(handleEl, targetEl, dropBottomHalf) {
+        try {
+            const r1 = handleEl.getBoundingClientRect();
+            const r2 = targetEl.getBoundingClientRect();
+            if (!r1.width || !r2.width) return false;
+            const startX = r1.left + r1.width / 2;
+            const startY = r1.top + r1.height / 2;
+            const endX = r2.left + r2.width / 2;
+            const endY = dropBottomHalf ? r2.bottom - Math.max(2, r2.height * 0.2) : r2.top + Math.max(2, r2.height * 0.2);
+            const mk = (type, x, y, target) => {
+                const win = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+                const P = win.PointerEvent || window.PointerEvent;
+                const M = win.MouseEvent || window.MouseEvent;
+                const opts = { bubbles: true, cancelable: true, button: 0, buttons: type === 'pointerup' || type === 'mouseup' ? 0 : 1, clientX: x, clientY: y, view: window };
+                try { if (P) (target || handleEl).dispatchEvent(new P(type === 'mousedown' ? 'pointerdown' : type === 'mousemove' ? 'pointermove' : 'pointerup', { ...opts, pointerId: 1, pointerType: 'mouse', isPrimary: true })); } catch (e) {}
+                try { (target || handleEl).dispatchEvent(new M(type, opts)); } catch (e) {}
+            };
+            mk('mousedown', startX, startY);
+            mk('mousemove', startX, startY + 1, document);
+            const steps = 6;
+            for (let s = 1; s <= steps; s++) {
+                const x = startX + (endX - startX) * (s / steps);
+                const y = startY + (endY - startY) * (s / steps);
+                mk('mousemove', x, y, document);
+            }
+            mk('mousemove', endX, endY, document);
+            mk('mouseup', endX, endY, document);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // Применение последовательности к ui-sortable: позиция за позицией
+    async function applySortableOrdering(sortItems, sequence) {
+        try {
+            // Массив id исходных элементов в нужном порядке
+            const desired = [];
+            for (const letter of sequence) {
+                const idx = findOptionIndexByLetter(letter, sortItems.map(el => ({ el, text: extractCleanText(el), clickable: el })));
+                if (idx < 0) return false;
+                desired.push(sortItems[idx]);
+            }
+            let moved = 0;
+            for (let pos = 0; pos < desired.length; pos++) {
+                const current = Array.from(sortItems[0].parentElement.children).filter(c => sortItems.includes(c));
+                const targetNow = desired[pos];
+                const curIdx = current.indexOf(targetNow);
+                if (curIdx === pos) continue;
+                const dropRef = current[pos] === targetNow ? current[pos + 1] : current[pos];
+                if (!dropRef) continue;
+                const handle = targetNow.matches('.ui-sortable-handle') ? targetNow : (targetNow.querySelector('.ui-sortable-handle') || targetNow);
+                const ok = dragSortableItem(handle, dropRef, curIdx < pos); // вверх — на верхнюю половину, вниз — на нижнюю
+                if (ok) {
+                    moved++;
+                    await new Promise(r => setTimeout(r, 350)); // пауза, как ui-sortable.start требует между drag'ами
+                }
+            }
+            return moved > 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function handleTextInput(answerText) {
         try {
             const hudEl = document.getElementById('gemini-direct-hud');
-            const textInput = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
-                .find(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el) && !el.closest('header, nav, .search'));
+            const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+                .filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el) && !el.closest('header, nav, .search'));
+
+            // Многополевой ввод (несколько пропусков): заполняем по порядку
+            if (inputs.length > 1) {
+                const parts = String(answerText).split(/\s*[;,]\s*|\n+/).map(s => s.trim()).filter(Boolean);
+                let filled = 0;
+                for (let i = 0; i < Math.min(inputs.length, parts.length); i++) {
+                    try {
+                        const el = inputs[i];
+                        const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                        if (nativeSetter) nativeSetter.call(el, parts[i]);
+                        else el.value = parts[i];
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        highlightElement(el);
+                        filled++;
+                        await new Promise(r => setTimeout(r, 120));
+                    } catch (err) {}
+                }
+                return filled > 0;
+            }
+
+            const textInput = inputs[0];
             if (!textInput) return false;
 
             const cleanVal = String(answerText).trim();
@@ -1533,9 +1910,8 @@
             }
             if (clickedCount > 0) return true;
 
-            // Способ Б: Выпадающие списки <select> (строго по букве/префиксу)
-            const selects = Array.from(document.querySelectorAll('select, .v-test-questions-select-block select'))
-                .filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el));
+            // Способ Б: Выпадающие списки <select> (строго внутри блока вопроса)
+            const selects = getQuestionSelects(hudEl);
             if (selects.length > 0) {
                 pairs.forEach(([num, letter]) => {
                     const sIdx = num - 1;
@@ -1593,7 +1969,7 @@
 
         // 2. Последовательности (Ordering)
         if (parsed.type === 'ordering') {
-            const selects = Array.from(document.querySelectorAll('select')).filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el));
+            const selects = getQuestionSelects(hudEl);
             if (selects.length >= parsed.sequence.length) {
                 parsed.sequence.forEach((letter, sIdx) => {
                     const sel = selects[sIdx];
@@ -1617,7 +1993,18 @@
                 return true;
             }
 
-            // Подсветка и нумерация элементов для сортировки / последовательного клика
+            // Реальная сортировка drag-and-drop (jQuery UI sortable)
+            const sortItemsDD = Array.from(document.querySelectorAll('.ui-sortable .ui-sortable-handle, .ui-sortable > [class*="sort-item"], .v-sort-item'))
+                .filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el));
+            if (sortItemsDD.length >= 2 && sortItemsDD.length >= parsed.sequence.length) {
+                const okDD = await applySortableOrdering(sortItemsDD, parsed.sequence);
+                if (okDD) {
+                    sortItemsDD.forEach((el, i) => highlightElement(el, `#${i + 1}`));
+                    return true;
+                }
+            }
+
+            // Подсветка и нумерация элементов для сортировки / последовательного клика (fallback)
             const options = findOptionElements();
             const sortItems = Array.from(document.querySelectorAll('.v-sort-item, .ui-sortable-handle, [class*="sort-item"]')).filter(el => !hudEl || !hudEl.contains(el));
             const targetList = sortItems.length >= 2 ? sortItems.map(el => ({ el, clickable: el, text: extractCleanText(el) })) : options;
@@ -1666,6 +2053,10 @@
         }
 
         // 5. Одиночный выбор (Single choice с перекрёстной проверкой текста и буквы)
+        // Модель ответила 2+ буквами — это множественный выбор даже без чекбоксов на странице
+        if (parsed.letters && parsed.letters.length > 1) {
+            return applyAutoAnswer({ ...parsed, type: 'multiple' });
+        }
         const options = findOptionElements();
         let targetIdx = -1;
         let textMatchIdx = -1;
@@ -1884,7 +2275,11 @@
 Напиши ТІЛЬКИ точну відповідь (одне слово, словосполучення або число), БЕЗ крапки в кінці та без лапок і пояснень.`;
         }
 
-        const promptText = `ТИ ВИСОКОТОЧНИЙ ЕКСПЕРТ З ТЕСТІВ ШКІЛЬНОЇ ТА УНІВЕРСИТЕТСЬКОЇ ПРОГРАМИ УКРАЇНИ.
+        const cotPrefix = cotModeEnabled
+            ? `РЕЖИМ ГЛИБОКОГО МІРКУВАННЯ: спочатку проаналізуй завдання покроково (внутрішньо, без виводу міркувань у відповідь), визнач тип питання, відкинь неправильні варіанти, і лише потім дай фінальну відповідь СТРОГО у форматі нижче.\n\n`
+            : '';
+
+        const promptText = `${cotPrefix}ТИ ВИСОКОТОЧНИЙ ЕКСПЕРТ З ТЕСТІВ ШКІЛЬНОЇ ТА УНІВЕРСИТЕТСЬКОЇ ПРОГРАМИ УКРАЇНИ.
 ТВОЄ ЗАВДАННЯ — ДАТИ НАЙТОЧНІШУ ПРАВИЛЬНУ ВІДПОВІДЬ. Уважно проаналізуй текст${imageParts.length > 0 ? ' та прикріплені зображення' : ''}.
 ${typeRule}
 
@@ -1904,37 +2299,18 @@ ${q}`;
             const currentModel = modelsCascade[modelIndex];
 
             try {
-                _httpRequest({
+                _httpRequest(Object.assign(
+                    buildProviderRequest(currentModel, promptText, imageParts),
+                    {
                     method: "POST",
-                    url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent`,
-                    headers: {
-                        "Content-Type": "application/json",
-                        "x-goog-api-key": apiKey.trim()
-                    },
-                    data: JSON.stringify({
-                        contents: [{ parts: [{ text: promptText }, ...imageParts] }],
-                        generationConfig: {
-                            temperature: 0.1,
-                            maxOutputTokens: 1024
-                        }
-                    }),
-                    timeout: 15000,
+                    timeout: cotModeEnabled ? 30000 : 15000,
                     onload: function (res) {
                         if (res.status >= 200 && res.status < 300) {
                             if (progressTimer) clearInterval(progressTimer);
 
                             let cleanAns = "";
                             try {
-                                const data = JSON.parse(res.responseText);
-                                const parts = data.candidates?.[0]?.content?.parts || [];
-                                let rawAnswer = "";
-                                for (const p of parts) {
-                                    if (!p.thought && p.text) rawAnswer += p.text;
-                                }
-                                if (!rawAnswer && parts.length > 0) {
-                                    rawAnswer = parts[parts.length - 1].text || "";
-                                }
-                                cleanAns = sanitizeAnswer(rawAnswer);
+                                cleanAns = sanitizeAnswer(extractAnswerFromResponse(res.responseText));
                             } catch (parseErr) {
                                 isProcessing = false;
                                 setOutput('Ошибка парсинга ответа', '#f87171', '13px');
@@ -1968,13 +2344,14 @@ ${q}`;
 
                             handleSolvedAnswer(cleanAns, qData, false);
                         } else {
-                            if (res.status === 400 || res.status === 403) {
+                            if (res.status === 400 || res.status === 403 || res.status === 401) {
                                 let errMsg = `Ошибка API (${res.status})`;
                                 try {
                                     const errObj = JSON.parse(res.responseText);
                                     if (errObj.error?.message) errMsg = errObj.error.message;
                                 } catch (e) {}
-                                if (errMsg.toLowerCase().includes('api key')) {
+                                const lowMsg = errMsg.toLowerCase();
+                                if (lowMsg.includes('api key') || lowMsg.includes('authorization') || lowMsg.includes('invalid key') || lowMsg.includes('no auth')) {
                                     if (progressTimer) clearInterval(progressTimer);
                                     isProcessing = false;
                                     setOutput('🔑 Неверный API ключ', '#f87171', '13px');
@@ -2007,7 +2384,8 @@ ${q}`;
                         }
                         doRequest(modelIndex + 1, 0);
                     }
-                });
+                    }
+                ));
             } catch (reqErr) {
                 console.warn(`[Vseosvita v10.1] Request exception on ${currentModel}:`, reqErr);
                 doRequest(modelIndex + 1, 0);
@@ -2113,6 +2491,79 @@ ${q}`;
         }, 300);
     }
 
+    // ==================== ЭКСПОРТ / ИМПОРТ ИСТОРИИ И КЭША ====================
+    const CACHE_SCHEMA_VERSION = 'vseosvita_qa_cache_v2';
+
+    function exportHistory() {
+        try {
+            const payload = {
+                schemaVersion: CACHE_SCHEMA_VERSION,
+                exportedAt: new Date().toISOString(),
+                count: getCacheCount(),
+                cache: answerCache
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `vseosvita_history_${new Date().toISOString().slice(0, 10)}.json`;
+            (document.body || document.documentElement).appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            setOutput(`📤 Экспортировано ${getCacheCount()} ответов`, '#38bdf8', '14px');
+            return true;
+        } catch (e) {
+            console.warn('[Vseosvita] exportHistory failed:', e);
+            setOutput('Ошибка экспорта', '#f87171', '13px');
+            return false;
+        }
+    }
+
+    function importHistory(file) {
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const parsed = JSON.parse(String(reader.result || ''));
+                // Валидация схемы: версия + объект-словарь ответов
+                let imported = null;
+                if (parsed && parsed.schemaVersion === CACHE_SCHEMA_VERSION && typeof parsed.cache === 'object' && !Array.isArray(parsed.cache)) {
+                    imported = parsed.cache;
+                } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    imported = parsed; // устаревший/сырой формат ANSWER_CACHE_V10
+                }
+                if (!imported) throw new Error('bad schema');
+                const validEntries = Object.entries(imported).filter(([k, v]) =>
+                    typeof k === 'string' && k.length >= 8 && typeof v === 'string' && v.length > 0);
+                if (validEntries.length === 0) throw new Error('no entries');
+
+                for (const [k, v] of validEntries) answerCache[k] = v;
+                // Ограничение 300 записей
+                const keys = Object.keys(answerCache);
+                while (keys.length > 300) delete answerCache[keys.shift()];
+                _setValue("ANSWER_CACHE_V10", answerCache);
+
+                const countEl = document.querySelector('#gemini-cache-count');
+                if (countEl) countEl.innerText = getCacheCount();
+                setOutput(`📥 Импортировано ${validEntries.length} ответов`, '#4ade80', '14px');
+            } catch (e) {
+                console.warn('[Vseosvita] importHistory failed:', e);
+                setOutput('Неверный файл импорта', '#f87171', '13px');
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    function pickImportFile() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.style.display = 'none';
+        input.onchange = () => { if (input.files && input.files[0]) importHistory(input.files[0]); input.remove(); };
+        (document.body || document.documentElement).appendChild(input);
+        input.click();
+    }
+
     // Меню Tampermonkey
     if (typeof GM_registerMenuCommand !== 'undefined') {
         GM_registerMenuCommand("⚙ Настройки, API ключ и Кэш", openSettingsModal);
@@ -2127,6 +2578,8 @@ ${q}`;
             _setValue("ANSWER_CACHE_V10", {});
             setOutput('🗑 Кэш очищен!', '#38bdf8', '14px');
         });
+        GM_registerMenuCommand("📤 Экспорт истории и кэша (JSON)", exportHistory);
+        GM_registerMenuCommand("📥 Импорт истории и кэша (JSON)", pickImportFile);
     }
 
     // Сохранение оверлея при полноэкранном режиме
