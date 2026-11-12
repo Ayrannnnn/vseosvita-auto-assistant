@@ -2,7 +2,7 @@
 // @name         Vseosvita Direct Gemini Assistant
 // @namespace    https://vseosvita.ua/
 // @version      10.3
-// @description  Авто-помощник v10.1 для Всеосвіти: Draggable HUD 2.0, мультимодальный анализ изображений, все типы вопросов (одиночный, мультивыбор, соответствия, последовательности, ввод текста), локальный кэш, умная задержка и мульти-модельный Failover 2.0.
+// @description  Авто-помощник v10.3 для Всеосвіти: Gemini и OpenRouter, Chain-of-Thought, анализ изображений/SVG/LaTeX, все типы вопросов, локальный кэш и резервные модели.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -263,7 +263,7 @@
             card.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <div style="font-weight:bold; font-size:14px; color:#38bdf8; display:flex; align-items:center; gap:6px;">
-                        <span>✦</span> ВСЕОСВІТА ПОМОЩНИК v10.1
+                        <span>✦</span> ВСЕОСВІТА ПОМОЩНИК v10.3
                     </div>
                     <button id="vse-studio-close" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:16px;">✕</button>
                 </div>
@@ -543,7 +543,7 @@
             <div id="gemini-drag-handle" style="padding: 8px 10px; background: #1e293b; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; gap: 8px;">
                 <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
                     <span id="gemini-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
-                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА v10.1</span>
+                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА v10.3</span>
                     <span id="gemini-model-badge" style="font-size: 10px; color: #94a3b8; font-weight: normal; white-space: nowrap;"></span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
@@ -814,7 +814,7 @@
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span style="font-size:18px;">⚙</span>
-                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.1</span>
+                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.3</span>
                 </div>
                 <button id="gemini-modal-close-btn" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1;">✕</button>
             </div>
@@ -2364,7 +2364,7 @@ ${q}`;
                                 setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
                                 return;
                             }
-                            console.warn(`[Vseosvita v10.1] Model ${currentModel} returned ${res.status}, failover...`);
+                            console.warn(`[Vseosvita v10.3] Model ${currentModel} returned ${res.status}, failover...`);
                             doRequest(modelIndex + 1, 0);
                         }
                     },
@@ -2387,7 +2387,7 @@ ${q}`;
                     }
                 ));
             } catch (reqErr) {
-                console.warn(`[Vseosvita v10.1] Request exception on ${currentModel}:`, reqErr);
+                console.warn(`[Vseosvita v10.3] Request exception on ${currentModel}:`, reqErr);
                 doRequest(modelIndex + 1, 0);
             }
         }
@@ -2410,7 +2410,7 @@ ${q}`;
                     await applyAutoAnswer(parsed);
                 }
             } catch (clickErr) {
-                console.error("[Vseosvita v10.1] Auto-click error:", clickErr);
+                console.error("[Vseosvita v10.3] Auto-click error:", clickErr);
             }
 
             if (autoAdvanceNext && autopilotEnabled) {

@@ -1,65 +1,75 @@
 <div align="center">
 
-# ✦ Всеосвіта Auto Assistant v10.1
+# ✦ Всеосвіта Auto Assistant v10.3
 
-**Інтелектуальний авто-помічник для вирішення тестів на платформі «Всеосвіта» на базі Google Gemini AI**
+**Користувацький скрипт для допомоги із запитаннями на платформі «Всеосвіта»: аналіз тексту, формул, зображень і різних типів відповідей через Gemini або OpenRouter.**
 
-[![Версія](https://img.shields.io/badge/Версія-10.1_Release-0284c7?style=for-the-badge&logo=rocket)](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
-[![Двигун](https://img.shields.io/badge/AI_Двигун-Google_Gemini-6366f1?style=for-the-badge&logo=google)](https://aistudio.google.com)
-[![Підтримка](https://img.shields.io/badge/Браузери-Chrome_|_Firefox_|_Edge-16a34a?style=for-the-badge&logo=googlechrome)](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
+[![Версія](https://img.shields.io/badge/Версія-v10.3-0284c7?style=for-the-badge&logo=rocket)](CHANGELOG.md)
+[![AI](https://img.shields.io/badge/AI-Gemini_%2B_OpenRouter-6366f1?style=for-the-badge&logo=googlegemini)](https://openrouter.ai/)
+[![Встановлення](https://img.shields.io/badge/Tampermonkey-встановити-00485b?style=for-the-badge&logo=tampermonkey)](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)
 [![Ліцензія](https://img.shields.io/badge/Ліцензія-MIT-f59e0b?style=for-the-badge)](LICENSE)
 
-[🇷🇺 Русская версия](README.md) • [⚡ Швидке встановлення](#-швидке-встановлення-в-1-клік) • [🔑 Отримання API ключа](#-отримання-безкоштовного-ключа-gemini) • [📋 Історія змін](CHANGELOG.md)
-
----
+[Русская версия](README.md) · [Встановити](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js) · [Зміни v10.3](CHANGELOG.md) · [Вихідний код](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
 
 </div>
 
-## 🌟 Основні переваги v10.1
+## Що нового у v10.3
 
-| Функція | Опис |
+- Надійний розбір відповідей API: JSON у Markdown, текст навколо JSON, OpenAI-масиви `content` і відповіді у `reasoning`.
+- Режим 🧠 Chain-of-Thought для складних завдань: більший бюджет міркувань і довший таймаут.
+- Підтримка MathJax/LaTeX, зображень і SVG-схем; формули передаються моделі разом із запитанням.
+- Розв'язувачі для одиночного та множинного вибору, відповідностей, сортування drag-and-drop і одного чи кількох текстових полів.
+- Експорт та імпорт локального кешу відповідей у JSON.
+
+Повний перелік змін — у [CHANGELOG.md](CHANGELOG.md).
+
+## Встановлення
+
+1. Встановіть [Tampermonkey для Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo), [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/) або [Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd).
+2. Відкрийте **[інсталяційний файл v10.3](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)** та підтвердьте встановлення у Tampermonkey.
+3. Відкрийте тест на [Всеосвіті](https://vseosvita.ua/), натисніть `⚙️ НАЛАШТУВАННЯ` у панелі й додайте ключ Gemini або OpenRouter.
+
+Для ручного встановлення завантажте [актуальний архів вихідного коду](https://github.com/Ayrannnnn/vseosvita-auto-assistant/archive/refs/heads/main.zip), розпакуйте його та відкрийте `gemini-quiz-assistant.user.js` через Tampermonkey.
+
+## Підключення моделі
+
+| Провайдер | Де отримати ключ | Що вказати в налаштуваннях |
+| :--- | :--- | :--- |
+| **Google Gemini** | [Google AI Studio](https://aistudio.google.com/app/apikey) | Ключ `AIza…` |
+| **OpenRouter** | [OpenRouter Keys](https://openrouter.ai/keys) | Ключ `sk-or-…` |
+
+За вибору «Авто» скрипт спочатку використовує OpenRouter, а потім перемикається на резервні моделі або нативний Gemini API, якщо модель недоступна.
+
+## Можливості
+
+| Можливість | Як працює |
 | :--- | :--- |
-| **🧩 Підтримка ВСІХ типів запитань** | Одиночний, множинний вибір, відповідності (`1-А, 2-Б`), послідовності, введення тексту/чисел та мультимодальний аналіз зображень. |
-| **🖱️ Draggable HUD 2.0** | Плаваюча панель управління, яку можна перетягувати, згортати в компактний віджет (`➖`) або перепитати AI (`🔄`). |
-| **💾 Local Cache (Локальний кеш)** | Миттєві відповіді на повторювані запитання без запитів до API. |
-| **🤖 Автопілот & Smart Delay** | Автоматичне проходження з інтелектуальною імітацією дій людини та адаптацією під таймер. |
-| **🛡️ Мульти-модельний резерв 2.0** | Автоматичне перемикання між `gemini-3.1-flash-lite`, `gemini-2.5-flash-lite`, `gemini-2.5-flash` та `gemini-2.5-pro`. |
+| **Типи запитань** | Одиночний і множинний вибір, відповідності, послідовності, текстові та числові відповіді. |
+| **Зображення та формули** | Збирає зображення, SVG і LaTeX/MathJax із запитання та варіантів. |
+| **Розумний вибір моделей** | Підтримує Gemini та OpenRouter; каскадно перемикається після помилок запиту. |
+| **Локальний кеш** | Зберігає знайдені відповіді у браузері; кеш можна експортувати, імпортувати й очистити. |
+| **Панель керування** | Перетягуваний HUD, запуск розв'язання, повторний запит, налаштування та гарячі клавіші. |
 
----
+## Керування
 
-## 🚀 Швидке встановлення в 1 клік
+- `Alt + Q` — розв'язати поточне запитання.
+- `Alt + W` — перейти до наступного («Зберегти і далі»).
+- `Alt + H` — сховати або показати панель.
+- `🔄` або `Shift` під час запуску — повторити запит без локального кешу.
+- `⚙️` — API-ключ, модель, затримка, кеш, CoT та експорт/імпорт історії.
 
-### Спосіб 1: Напряму в браузер через Tampermonkey (Рекомендовано)
+## Важливо
 
-1. Встановіть розширення **Tampermonkey** для вашого браузера:
-   - [Tampermonkey для Google Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
-   - [Tampermonkey для Mozilla Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
-   - [Tampermonkey для Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
-2. Натисніть на посилання нижче — Tampermonkey автоматично перехопить скрипт і запропонує натиснути **«Встановити»**:
-   👉 **[⚡ ВСТАНОВИТИ ВСЕОСВІТА AUTO ASSISTANT v10.1](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)**
-3. Готово! Скрипт активний і автоматично запускатиметься на всіх тестах Всеосвіти.
+Скрипт працює у вашому браузері. API-ключ зберігається локально в налаштуваннях Tampermonkey і передається лише вибраному AI-провайдеру для обробки запитання. Перевіряйте відповіді та дотримуйтеся правил навчальної платформи й курсу.
 
----
+## Посилання
 
-### Спосіб 2: Офлайн-інсталятор (Windows)
+- [Встановити останню версію](https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js)
+- [Переглянути код на GitHub](https://github.com/Ayrannnnn/vseosvita-auto-assistant)
+- [Повідомити про проблему](https://github.com/Ayrannnnn/vseosvita-auto-assistant/issues)
+- [Історія змін](CHANGELOG.md)
+- [Ліцензія MIT](LICENSE)
 
-Для знайомих, яким простіше запустити один файл:
-1. Завантажте готовий архів [**Vseosvita_Assistant_v10.1.zip**](https://github.com/Ayrannnnn/vseosvita-auto-assistant/releases/download/v10.1/Vseosvita_Assistant_v10.1.zip) із розділу [**Releases**](https://github.com/Ayrannnnn/vseosvita-auto-assistant/releases/latest).
-2. Розархівуйте та запустіть **`ЗАПУСТИ МЕНЯ.bat`**.
-3. У вікні натисніть зелену кнопку **«2. ⚡ УСТАНОВИТЬ АССИСТЕНТ»**.
+## Ліцензія
 
----
-
-## 🔑 Отримання безкоштовного ключа Gemini
-
-Асистент працює напряму з офіційним API Google Gemini. Ключ **безкоштовний назавжди**:
-
-1. Перейдіть на сайт **[Google AI Studio (API Keys)](https://aistudio.google.com/app/apikey)**.
-2. Натисніть **«Create API key»** та скопіюйте ключ.
-3. Відкрийте Всеосвіту — асистент сам покаже вікно для введення ключа.
-
----
-
-## ⚠️ Відмова від відповідальності (Disclaimer)
-
-*Цей проект розроблено виключно в освітніх цілях. Автор не несе відповідальності за нецільове використання скрипта.*
+Проєкт поширюється за [ліцензією MIT](LICENSE).
