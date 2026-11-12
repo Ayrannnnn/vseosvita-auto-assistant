@@ -1,21 +1,21 @@
 // ==UserScript==
-// @name         Vseosvita Direct Gemini Assistant
+// @name         Vseosvita + Naurok.ua AI Assistant
 // @namespace    https://vseosvita.ua/
-// @version      10.3.1
-// @description  Авто-помощник v10.3 для Всеосвіти: Gemini и OpenRouter, Chain-of-Thought, анализ изображений/SVG/LaTeX, все типы вопросов, локальный кэш и резервные модели.
+// @version      10.5
+// @description  Помощник v10.5 для Всеосвіти та naurok.ua через Google Gemini.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @match        *://*.vseosvita.ua/*
 // @match        *://vseosvita.ua/*
+// @match        *://*.naurok.ua/*
+// @match        *://naurok.ua/*
 // @match        *://aistudio.google.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @connect      generativelanguage.googleapis.com
-// @connect      openrouter.ai
-// @connect      *
 // @run-at       document-end
 // ==/UserScript==
 
@@ -60,19 +60,8 @@
         });
     };
 
-    // Проверенные рабочие модели Gemini 2026 с каскадным переключением (Failover 2.0)
+    // Проверенные модели Gemini с каскадным переключением при сбоях и лимитах.
     const DEFAULT_MODELS = [
-        // OpenRouter (первичный провайдер): валидные ID каталога OpenRouter
-        "openrouter/free",
-        "google/gemini-3.7-flash",
-        "google/gemini-2.5-flash",
-        // Резервная цепочка OpenRouter (правила бригады при 429/лимитах)
-        "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4.1-flash",
-        "nvidia/nemotron-3.5-lightning:free",
-        "minimax/minimax-m3.1-flash",
-        "xiaomi/mimo-v2.6-flash",
-        // Fallback на нативный Gemini API
         "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash-lite",
@@ -88,33 +77,9 @@
         return [pref, ...DEFAULT_MODELS.filter(m => m !== pref)];
     }
 
-    // Выбор провайдера: модели со слэшем в имени (openrouter/free, google/..., z-ai/...) идут через OpenRouter
-    function isOpenRouterModel(m) {
-        return typeof m === 'string' && m.indexOf('/') !== -1;
-    }
-
-    // Построение провайдер-зависимого запроса: Gemini (contents/parts) или OpenRouter (messages/content)
-    function buildProviderRequest(model, promptText, images, keyOverride) {
+    // Запрос к Google Gemini API.
+    function buildGeminiRequest(model, promptText, images, keyOverride) {
         const useKey = (keyOverride || apiKey).trim();
-        if (isOpenRouterModel(model)) {
-            const content = [{ type: "text", text: promptText }];
-            for (const img of images) {
-                content.push({ type: "image_url", image_url: { url: img.inlineData ? `data:${img.inlineData.mimeType};base64,${img.inlineData.data}` : (img.imageUrl || img) } });
-            }
-            return {
-                url: "https://openrouter.ai/api/v1/chat/completions",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${useKey}`
-                },
-                data: JSON.stringify(Object.assign({
-                    model: model,
-                    messages: [{ role: "user", content: content }],
-                    temperature: 0.1,
-                    max_tokens: cotModeEnabled ? 8192 : 2048
-                }, cotModeEnabled ? { reasoning: { effort: "high" } } : {}))
-            };
-        }
         return {
             url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
             headers: {
@@ -131,8 +96,7 @@
         };
     }
 
-    // Разбор ответа провайдера в единый текст (Gemini candidates/parts или OpenAI choices/message/content).
-    // Устойчив к Markdown-обёрткам ```json ... ``` и мусору вокруг JSON (баг №1 из QA-аудита).
+    // Устойчивый разбор ответа Gemini, включая Markdown-обёртки и мусор вокруг JSON.
     function extractAnswerFromResponse(responseText) {
         let data = null;
         try {
@@ -149,30 +113,6 @@
             if (!data) throw new Error('non-json response');
         }
 
-        // OpenAI-совместимый формат (OpenRouter)
-        if (data.choices && data.choices[0] && data.choices[0].message) {
-            const msg = data.choices[0].message;
-            let content = msg.content;
-            if (Array.isArray(content)) {
-                // content-части: {type:"text", text:"..."}
-                const texts = content.filter(p => p && p.type === 'text' && p.text).map(p => p.text);
-                if (texts.length > 0) return texts.join('\n').trim();
-                content = '';
-            }
-            let ans = String(content || '').trim();
-            // Некоторые reasoning-модели возвращают пустой content и текст в reasoning
-            if (!ans && msg.reasoning) {
-                const lines = String(msg.reasoning).trim().split(/\n+/).filter(Boolean);
-                for (let i = lines.length - 1; i >= 0; i--) {
-                    const m = lines[i].match(/(?:відповідь|ответ|answer)[:\s]*([А-ЯЄІЇA-Za-z0-9ІІІІІVХ]{1,4}[\)\.].{0,80}|[А-ЯЄІЇA-Z](?:,\s*[А-ЯЄІЇA-Z])*$|\d+\s*-\s*[А-ЯЄІЇA-Z](?:[\s,]+\d+\s*-\s*[А-ЯЄІЇA-Z])*)/i);
-                    if (m) { ans = m[1].trim(); break; }
-                }
-                if (!ans) ans = lines[lines.length - 1] || '';
-            }
-            return ans;
-        }
-
-        // Нативный Gemini
         const parts = data.candidates?.[0]?.content?.parts || [];
         let rawAnswer = "";
         for (const p of parts) {
@@ -187,14 +127,15 @@
     // Проверка рабочего API-ключа с перебором моделей и защитой через заголовок x-goog-api-key
     function testGeminiKey(keyToTest, callback) {
         if (!keyToTest || keyToTest.trim().length < 20) {
-            callback(false, "Ключ слишком короткий (AIza... или sk-or-...)");
+            callback(false, "Введите действительный ключ Google Gemini (AIza...).");
             return;
         }
         const cleanKey = keyToTest.trim();
-        const isOrKey = cleanKey.indexOf('sk-or-') === 0;
-        const checkModels = isOrKey
-            ? ["openrouter/free", "google/gemini-2.5-flash", "z-ai/glm-5.3-flash"]
-            : ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+        if (/^sk-or-/i.test(cleanKey)) {
+            callback(false, "Поддерживается только ключ Google Gemini (AIza...).");
+            return;
+        }
+        const checkModels = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
 
         function tryCheck(idx) {
             if (idx >= checkModels.length) {
@@ -203,7 +144,7 @@
             }
             const m = checkModels[idx];
             _httpRequest(Object.assign(
-                buildProviderRequest(m, "ping", [], cleanKey),
+                buildGeminiRequest(m, "ping", [], cleanKey),
                 {
                     method: "POST",
                     timeout: 8000,
@@ -263,7 +204,7 @@
             card.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <div style="font-weight:bold; font-size:14px; color:#38bdf8; display:flex; align-items:center; gap:6px;">
-                        <span>✦</span> ВСЕОСВІТА ПОМОЩНИК v10.3
+                        <span>✦</span> ВСЕОСВІТА + НА УРОК v10.5
                     </div>
                     <button id="vse-studio-close" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:16px;">✕</button>
                 </div>
@@ -543,7 +484,7 @@
             <div id="gemini-drag-handle" style="padding: 8px 10px; background: #1e293b; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; gap: 8px;">
                 <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
                     <span id="gemini-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
-                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА v10.3</span>
+                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА · НА УРОК v10.5</span>
                     <span id="gemini-model-badge" style="font-size: 10px; color: #94a3b8; font-weight: normal; white-space: nowrap;"></span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
@@ -814,7 +755,7 @@
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span style="font-size:18px;">⚙</span>
-                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.3</span>
+                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.5</span>
                 </div>
                 <button id="gemini-modal-close-btn" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1;">✕</button>
             </div>
@@ -826,7 +767,7 @@
                 <span>🌐</span> Получить ключ в Google AI Studio
             </a>
             <div style="display:flex; gap:6px; margin-bottom:14px;">
-                <input id="gemini-modal-input" type="password" placeholder="AIza... или sk-or-..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:6px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
+                <input id="gemini-modal-input" type="password" placeholder="AIza..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:6px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
                 <button id="gemini-modal-toggle-eye" title="Показать/скрыть" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">👁</button>
                 <button id="gemini-modal-paste-btn" title="Вставить из буфера" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
             </div>
@@ -835,14 +776,7 @@
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
                     <span style="color:#cbd5e1;">Модель AI:</span>
                     <select id="gemini-modal-model" style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:6px; padding:5px 8px; font-size:12px;">
-                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (OpenRouter → Gemini failover)</option>
-                        <option value="openrouter/free" ${preferredModel === 'openrouter/free' ? 'selected' : ''}>openrouter/free (роутер бесплатных)</option>
-                        <option value="google/gemini-3.7-flash" ${preferredModel === 'google/gemini-3.7-flash' ? 'selected' : ''}>google/gemini-3.7-flash</option>
-                        <option value="z-ai/glm-5.3-flash" ${preferredModel === 'z-ai/glm-5.3-flash' ? 'selected' : ''}>z-ai/glm-5.3-flash</option>
-                        <option value="deepseek/deepseek-v4.1-flash" ${preferredModel === 'deepseek/deepseek-v4.1-flash' ? 'selected' : ''}>deepseek/deepseek-v4.1-flash</option>
-                        <option value="nvidia/nemotron-3.5-lightning:free" ${preferredModel === 'nvidia/nemotron-3.5-lightning:free' ? 'selected' : ''}>nvidia/nemotron-3.5-lightning:free</option>
-                        <option value="minimax/minimax-m3.1-flash" ${preferredModel === 'minimax/minimax-m3.1-flash' ? 'selected' : ''}>minimax/minimax-m3.1-flash</option>
-                        <option value="xiaomi/mimo-v2.6-flash" ${preferredModel === 'xiaomi/mimo-v2.6-flash' ? 'selected' : ''}>xiaomi/mimo-v2.6-flash</option>
+                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (резервные модели Gemini)</option>
                         <option value="gemini-3.1-flash-lite" ${preferredModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (нативный)</option>
                         <option value="gemini-2.5-flash" ${preferredModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash (нативный)</option>
                     </select>
@@ -1005,6 +939,26 @@
     const LETTERS_CYR = ['А', 'Б', 'В', 'Г', 'Д', 'Е', 'Є', 'Ж', 'З'];
     const LETTERS_LAT = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 
+    function isNaurokHost() {
+        return /(^|\.)naurok\.ua$/i.test(window.location.hostname);
+    }
+
+    function getNaurokActiveQuestion(root) {
+        if (!root || typeof root.querySelector !== 'function') return null;
+        const question = root.querySelector('.tb-question-text');
+        const answerGroup = root.querySelector('.tb-answers');
+        const options = Array.from(root.querySelectorAll('.tb-answers .tb-answer'));
+        if (!question || !answerGroup || options.length < 2) return null;
+        return { question, answerGroup, options };
+    }
+
+    function getNaurokGameRoot() {
+        if (!isNaurokHost()) return null;
+        const app = document.querySelector('#tb-app[data-mode="play"]');
+        const root = app && app.querySelector('.tb-game');
+        return getNaurokActiveQuestion(root) ? root : null;
+    }
+
     function isVisibleElement(el) {
         if (!el) return false;
         const style = window.getComputedStyle(el);
@@ -1024,7 +978,24 @@
         const hudEl = document.getElementById('gemini-direct-hud');
         const modalEl = document.getElementById('gemini-key-modal');
         const isOutsideHUD = el => (!hudEl || !hudEl.contains(el)) && (!modalEl || !modalEl.contains(el)) && !el.closest('header, nav, footer');
-        const searchRoots = scopeRoot ? [scopeRoot, document] : [document];
+        if (isNaurokHost()) {
+            const root = scopeRoot || getNaurokGameRoot();
+            const activeQuestion = getNaurokActiveQuestion(root);
+            if (!activeQuestion) return [];
+            return activeQuestion.options.filter(isVisibleElement).map(el => {
+                const label = extractCleanText(el.querySelector('.tb-answer-key'));
+                const body = extractCleanText(el.querySelector('.tb-rich'));
+                return {
+                    key: label,
+                    input: null,
+                    clickable: el,
+                    text: label ? `${label}) ${body}` : extractCleanText(el),
+                    el
+                };
+            });
+        }
+        // Keep all option discovery inside the supplied question container.
+        const searchRoots = scopeRoot ? [scopeRoot] : [document];
 
         for (const root of searchRoots) {
             // 1. Стандартные radio / checkbox вне HUD (с проверкой видимости обертки)
@@ -1056,6 +1027,8 @@
                 '.b-test-answers__item',
                 '.test-answer-item',
                 '.b-test__answer',
+                '[data-option-id]',
+                '[data-answer]',
                 '[data-answer-id]',
                 '[class*="answer-item"]',
                 '[class*="answers__item"]',
@@ -1079,7 +1052,8 @@
         }
 
         // 3. Fallback: элементы со строками "а) ...", "б) ..."
-        const allItems = Array.from(document.querySelectorAll('label, div, li, p'))
+        const fallbackRoot = scopeRoot || document;
+        const allItems = Array.from(fallbackRoot.querySelectorAll('label, div, li, p'))
             .filter(el => isOutsideHUD(el) && isVisibleElement(el))
             .filter(el => {
                 if (el.children.length > 4) return false;
@@ -1329,6 +1303,38 @@
         });
     }
 
+    function captureNaurokQuestion(game) {
+        if (!game) return null;
+
+        const activeQuestion = getNaurokActiveQuestion(game);
+        if (!activeQuestion) return null;
+
+        const questionText = extractCleanText(activeQuestion.question);
+        const answerOptions = activeQuestion.options.map((button, index) => {
+            const key = extractCleanText(button.querySelector('.tb-answer-key')) || LETTERS_LAT[index] || String(index + 1);
+            const text = extractCleanText(button.querySelector('.tb-rich')) || '[варіант із зображенням]';
+            return { key, text, el: button };
+        });
+        const isMultiple = activeQuestion.answerGroup.classList.contains('is-multiple') ||
+            activeQuestion.answerGroup.classList.contains('is-check') ||
+            activeQuestion.answerGroup.getAttribute('data-type') === 'multiple' ||
+            /кілька|multiple/i.test(activeQuestion.answerGroup.getAttribute('aria-label') || '');
+        const imageRoots = [activeQuestion.question, ...activeQuestion.options];
+        const imageUrls = collectContentImages(imageRoots);
+        const mathBlock = collectMathText(imageRoots);
+        const formattedBody = `${questionText}\n\nВаріанти відповідей:\n${answerOptions.map(option => `${option.key}) ${option.text}`).join('\n')}${mathBlock}`;
+
+        if (questionText.length < 4 || answerOptions.length < 2) return null;
+        return {
+            qType: isMultiple ? 'multiple' : 'single',
+            questionText,
+            formattedBody,
+            signature: (formattedBody + '|' + imageUrls.join(',')).replace(/\s+/g, ' '),
+            imageUrls,
+            answerOptions
+        };
+    }
+
     // Извлечение полного структурированного контекста вопроса
     function captureQuestionData(forceManual = false) {
         const hudEl = document.getElementById('gemini-direct-hud');
@@ -1345,6 +1351,10 @@
                 signature: activeSel.replace(/\s+/g, ' '),
                 imageUrls: []
             };
+        }
+
+        if (isNaurokHost()) {
+            return captureNaurokQuestion(getNaurokGameRoot());
         }
 
         // 1. Поиск заголовка/формулировки вопроса
@@ -1483,12 +1493,21 @@
             }
 
             const body = `${stem ? stem + "\n\n" : ""}Варіанти відповідей:\n${formattedOpts.join('\n')}${mathBlock}`;
+            const answerOptions = options.map((option, index) => {
+                const match = option.text.trim().match(/^([А-Яа-яЄєІіЇїA-Za-z0-9])(?:[\)\.]\s*|\n+)(.*)$/);
+                return {
+                    key: match ? match[1] : LETTERS_CYR[index] || String(index + 1),
+                    text: match ? match[2].trim() : option.text.trim(),
+                    el: option.el
+                };
+            });
             return {
                 qType: hasCheckboxes ? 'multiple' : 'single',
                 questionText: stem || body,
                 formattedBody: body,
                 signature: (body + "|" + imageUrls.join(',')).replace(/\s+/g, ' '),
-                imageUrls
+                imageUrls,
+                answerOptions
             };
         }
 
@@ -1695,6 +1714,19 @@
         if (!letter || !options || options.length === 0) return -1;
         const lettr = letter.trim().toUpperCase();
 
+        for (let i = 0; i < options.length; i++) {
+            if (String(options[i].key || '').trim().toUpperCase() === lettr) return i;
+        }
+
+        if (isNaurokHost() && options.every(option => /^[A-Z]$/.test(String(option.key || '').trim()))) {
+            const latinLookalikes = { 'А': 'A', 'В': 'B', 'С': 'C', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'Т': 'T', 'Х': 'X' };
+            const latinKey = latinLookalikes[lettr];
+            if (latinKey) {
+                const index = options.findIndex(option => option.key === latinKey);
+                if (index >= 0) return index;
+            }
+        }
+
         // 1. По явному префиксу текста: "А) ...", "А. ..."
         for (let i = 0; i < options.length; i++) {
             const optText = options[i].text.trim().toUpperCase();
@@ -1758,8 +1790,9 @@
     }
 
     // Select'ы строго внутри блока вопроса (защита от фильтров/языковых select страницы)
-    function getQuestionSelects(hudEl) {
+    function getQuestionSelects(hudEl, scopeRoot = null) {
         const visible = el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el);
+        if (scopeRoot) return Array.from(scopeRoot.querySelectorAll('select')).filter(visible);
         const containers = document.querySelectorAll('.v-test-container, .v-block-test, form.test-form, .question-item, .v-block-answers-cross-wrapper, .v-cross-wrap, .v-test-questions-select-block');
         const scoped = [];
         for (const c of containers) {
@@ -1835,10 +1868,11 @@
         }
     }
 
-    async function handleTextInput(answerText) {
+    async function handleTextInput(answerText, scopeRoot = null) {
         try {
             const hudEl = document.getElementById('gemini-direct-hud');
-            const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+            const inputRoot = scopeRoot || document;
+            const inputs = Array.from(inputRoot.querySelectorAll('input[type="text"], input[type="number"], textarea'))
                 .filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el) && !el.closest('header, nav, .search'));
 
             // Многополевой ввод (несколько пропусков): заполняем по порядку
@@ -1884,10 +1918,60 @@
         }
     }
 
+    function resolveNaurokOption(answer, options) {
+        if (!answer || !Array.isArray(options) || options.length === 0) return -1;
+
+        const clean = String(answer).trim();
+        const prefix = clean.match(/^([А-Яа-яЄєІіЇїA-Za-z0-9])(?:[\)\.\:\-–—]\s*|\s*$)(.*)$/);
+        if (prefix) {
+            const key = prefix[1].toUpperCase();
+            const keyMatches = options
+                .map((option, index) => ({ option, index }))
+                .filter(({ option }) => String(option.key || '').toUpperCase() === key);
+            if (keyMatches.length === 1) return keyMatches[0].index;
+        }
+
+        const answerText = (prefix ? prefix[2] : clean).replace(/\s+/g, ' ').trim().toLowerCase();
+        if (answerText) {
+            const textMatches = options
+                .map((option, index) => ({ option, index }))
+                .filter(({ option }) => String(option.text || '').replace(/\s+/g, ' ').trim().toLowerCase() === answerText);
+            if (textMatches.length === 1) return textMatches[0].index;
+        }
+
+        if (prefix) {
+            const latinLookalikes = { 'А': 'A', 'В': 'B', 'С': 'C', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'Т': 'T', 'Х': 'X' };
+            const key = latinLookalikes[prefix[1].toUpperCase()];
+            const keyMatches = options
+                .map((option, index) => ({ option, index }))
+                .filter(({ option }) => String(option.key || '').toUpperCase() === key);
+            if (key && keyMatches.length === 1) return keyMatches[0].index;
+        }
+
+        return -1;
+    }
+
+    function formatChoiceAnswer(answer, qData) {
+        const clean = String(answer || '').trim();
+        if (!qData || qData.qType !== 'single') return clean;
+
+        if (Array.isArray(qData.answerOptions)) {
+            const index = resolveNaurokOption(clean, qData.answerOptions);
+            if (index >= 0) {
+                const option = qData.answerOptions[index];
+                return `Вариант ${option.key} (значение: ${option.text})`;
+            }
+        }
+
+        const match = clean.match(/^([А-Яа-яЄєІіЇїA-Za-z0-9])\s*[\)\.]\s*(.+)$/);
+        return match ? `Вариант ${match[1].toUpperCase()} (значение: ${match[2].trim()})` : clean;
+    }
+
     // ==================== ПРИМЕНЕНИЕ ОТВЕТА (УНИВЕРСАЛЬНЫЙ РЕШАТЕЛЬ) ====================
     async function applyAutoAnswer(parsed) {
         if (!parsed) return false;
         const hudEl = document.getElementById('gemini-direct-hud');
+        const answerScope = isNaurokHost() ? getNaurokGameRoot() : null;
 
         // 1. Встановлення відповідності (Matching)
         if (parsed.type === 'matching' || parsed.type === 'ordering_pairs') {
@@ -1911,7 +1995,7 @@
             if (clickedCount > 0) return true;
 
             // Способ Б: Выпадающие списки <select> (строго внутри блока вопроса)
-            const selects = getQuestionSelects(hudEl);
+            const selects = getQuestionSelects(hudEl, answerScope);
             if (selects.length > 0) {
                 pairs.forEach(([num, letter]) => {
                     const sIdx = num - 1;
@@ -1940,7 +2024,7 @@
             }
 
             // Способ В: Табличная матрица радиокнопок
-            const radios = Array.from(document.querySelectorAll('input[type="radio"]')).filter(el => !hudEl || !hudEl.contains(el));
+            const radios = Array.from((answerScope || document).querySelectorAll('input[type="radio"]')).filter(el => !hudEl || !hudEl.contains(el));
             const grouped = {};
             radios.forEach(r => {
                 const name = r.name || 'default';
@@ -1969,7 +2053,7 @@
 
         // 2. Последовательности (Ordering)
         if (parsed.type === 'ordering') {
-            const selects = getQuestionSelects(hudEl);
+            const selects = getQuestionSelects(hudEl, answerScope);
             if (selects.length >= parsed.sequence.length) {
                 parsed.sequence.forEach((letter, sIdx) => {
                     const sel = selects[sIdx];
@@ -1994,7 +2078,7 @@
             }
 
             // Реальная сортировка drag-and-drop (jQuery UI sortable)
-            const sortItemsDD = Array.from(document.querySelectorAll('.ui-sortable .ui-sortable-handle, .ui-sortable > [class*="sort-item"], .v-sort-item'))
+            const sortItemsDD = Array.from((answerScope || document).querySelectorAll('.ui-sortable .ui-sortable-handle, .ui-sortable > [class*="sort-item"], .v-sort-item'))
                 .filter(el => (!hudEl || !hudEl.contains(el)) && isVisibleElement(el));
             if (sortItemsDD.length >= 2 && sortItemsDD.length >= parsed.sequence.length) {
                 const okDD = await applySortableOrdering(sortItemsDD, parsed.sequence);
@@ -2005,8 +2089,8 @@
             }
 
             // Подсветка и нумерация элементов для сортировки / последовательного клика (fallback)
-            const options = findOptionElements();
-            const sortItems = Array.from(document.querySelectorAll('.v-sort-item, .ui-sortable-handle, [class*="sort-item"]')).filter(el => !hudEl || !hudEl.contains(el));
+            const options = findOptionElements(answerScope);
+            const sortItems = Array.from((answerScope || document).querySelectorAll('.v-sort-item, .ui-sortable-handle, [class*="sort-item"]')).filter(el => !hudEl || !hudEl.contains(el));
             const targetList = sortItems.length >= 2 ? sortItems.map(el => ({ el, clickable: el, text: extractCleanText(el) })) : options;
             if (targetList.length >= 2) {
                 parsed.sequence.forEach((letter, orderIdx) => {
@@ -2022,7 +2106,7 @@
 
         // 3. Множественный выбор (Checkboxes)
         if (parsed.type === 'multiple') {
-            const options = findOptionElements();
+            const options = findOptionElements(answerScope);
             let count = 0;
             for (const lettr of parsed.letters) {
                 const idx = findOptionIndexByLetter(lettr, options);
@@ -2036,6 +2120,8 @@
                                 item.input.dispatchEvent(new Event('change', { bubbles: true }));
                             }
                         }
+                    } else if (isNaurokHost()) {
+                        if (item.clickable.getAttribute('aria-pressed') !== 'true') item.clickable.click();
                     } else {
                         safeClick(item.clickable || item.input);
                     }
@@ -2049,7 +2135,7 @@
 
         // 4. Открытый текст
         if (parsed.type === 'text') {
-            return handleTextInput(parsed.raw);
+            return handleTextInput(parsed.raw, answerScope);
         }
 
         // 5. Одиночный выбор (Single choice с перекрёстной проверкой текста и буквы)
@@ -2057,7 +2143,7 @@
         if (parsed.letters && parsed.letters.length > 1) {
             return applyAutoAnswer({ ...parsed, type: 'multiple' });
         }
-        const options = findOptionElements();
+        const options = findOptionElements(answerScope);
         let targetIdx = -1;
         let textMatchIdx = -1;
         let isExactTextMatch = false;
@@ -2092,11 +2178,10 @@
 
         const letterIdx = parsed.letter ? findOptionIndexByLetter(parsed.letter, options) : -1;
 
-        // Если текст точно совпал (или префикс нестрогий вроде "В Карпатах") — текст приоритетнее!
-        if (isExactTextMatch) {
-            targetIdx = textMatchIdx;
-        } else if (parsed.hasStrongPrefix && letterIdx !== -1) {
+        if (parsed.hasStrongPrefix && letterIdx !== -1) {
             targetIdx = letterIdx;
+        } else if (isExactTextMatch) {
+            targetIdx = textMatchIdx;
         } else if (textMatchIdx !== -1) {
             targetIdx = textMatchIdx;
         } else if (letterIdx !== -1) {
@@ -2113,6 +2198,8 @@
                         item.input.dispatchEvent(new Event('change', { bubbles: true }));
                     }
                 } catch (e) {}
+            } else if (isNaurokHost() && item.clickable) {
+                item.clickable.click();
             } else if (item.clickable) {
                 safeClick(item.clickable);
             }
@@ -2121,11 +2208,12 @@
         }
 
         // Если вариантов не найдено — пробуем вставить в текстовое поле
-        return handleTextInput(parsed.raw);
+        return handleTextInput(parsed.raw, answerScope);
     }
 
     // ==================== ПОИСК И НАЖАТИЕ КНОПКИ «ЗБЕРЕГТИ І ДАЛІ» ====================
     function findNextButton() {
+        if (isNaurokHost()) return null;
         const hudEl = document.getElementById('gemini-direct-hud');
         const isOutsideHUD = el => !hudEl || !hudEl.contains(el);
 
@@ -2156,6 +2244,7 @@
             }
         }
 
+        // Naurok (класичний режим): кнопки наступного запитання в окремій arena-розмітці.
         const interactive = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]')).filter(isOutsideHUD);
         for (const el of interactive) {
             const cls = typeof el.className === 'string' ? el.className : '';
@@ -2252,15 +2341,18 @@
 
         const topicContext = getQuizTopic();
         let typeRule = `ФОРМАТ ВІДПОВІДІ (строго 1 рядок, БЕЗ пояснень і вступних слів):
-1. Якщо один варіант: напиши ТІЛЬКИ букву і текст варіанта. Наприклад: "Б) 1861".
+1. Якщо один варіант: напиши ТІЛЬКИ букву варіанта, без тексту відповіді. Наприклад: "Б".
 2. Якщо кілька правильних варіантів: напиши ТІЛЬКИ букви через кому. Наприклад: "А, В" або "Б, Г".
 3. Якщо встановлення відповідності (1, 2, 3... та А, Б, В...): напиши ТІЛЬКИ пари цифра-буква через кому. Наприклад: "1-А, 2-Б, 3-В, 4-Г".
 4. Якщо послідовність: напиши ТІЛЬКИ порядок букв через кому. Наприклад: "В, А, Г, Б".
 5. Якщо вписати слово або число: напиши ТІЛЬКИ це слово або число.`;
 
         if (qData.qType === 'single') {
+            const visibleLabels = Array.isArray(qData.answerOptions)
+                ? qData.answerOptions.map(option => option.key).join(', ')
+                : '';
             typeRule = `ЦЕ ПИТАННЯ З ОДНІЄЮ ПРАВИЛЬНОЮ ВІДПОВІДДЮ.
-Напиши ТІЛЬКИ 1 правильний варіант у форматі "Буква) текст", наприклад: "Б) Київ". Без жодних пояснень!`;
+Напиши ТІЛЬКИ точну видиму літеру правильного варіанта. Не додавай текст відповіді чи пояснення!${visibleLabels ? ` Доступні позначки: ${visibleLabels}. Не підміняй латинські літери схожими кириличними.` : ''}`;
         } else if (qData.qType === 'multiple') {
             typeRule = `ЦЕ ПИТАННЯ З КІЛЬКОМА ПРАВИЛЬНИМИ ВІДПОВІДЯМИ (чекбокси).
 Обери ВСІ правильні варіанти і напиши ТІЛЬКИ їхні букви через кому, наприклад: "А, В, Г". Без пояснень!`;
@@ -2300,7 +2392,7 @@ ${q}`;
 
             try {
                 _httpRequest(Object.assign(
-                    buildProviderRequest(currentModel, promptText, imageParts),
+                    buildGeminiRequest(currentModel, promptText, imageParts),
                     {
                     method: "POST",
                     timeout: cotModeEnabled ? 30000 : 15000,
@@ -2364,7 +2456,7 @@ ${q}`;
                                 setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
                                 return;
                             }
-                            console.warn(`[Vseosvita v10.3] Model ${currentModel} returned ${res.status}, failover...`);
+                            console.warn(`[Quiz Assistant v10.5] Model ${currentModel} returned ${res.status}, failover...`);
                             doRequest(modelIndex + 1, 0);
                         }
                     },
@@ -2387,7 +2479,7 @@ ${q}`;
                     }
                 ));
             } catch (reqErr) {
-                console.warn(`[Vseosvita v10.3] Request exception on ${currentModel}:`, reqErr);
+                console.warn(`[Quiz Assistant v10.5] Request exception on ${currentModel}:`, reqErr);
                 doRequest(modelIndex + 1, 0);
             }
         }
@@ -2402,7 +2494,8 @@ ${q}`;
         async function finishQuestionFlow() {
             cancelActiveDelay = null;
             const prefix = fromCache ? '💾 ' : '';
-            setOutput(prefix + cleanAns, '#4ade80', cleanAns.length > 25 ? '14px' : '17px');
+            const displayAnswer = formatChoiceAnswer(cleanAns, qData);
+            setOutput(prefix + displayAnswer, '#4ade80', displayAnswer.length > 25 ? '14px' : '17px');
 
             try {
                 if (autoClickOption) {
@@ -2410,7 +2503,7 @@ ${q}`;
                     await applyAutoAnswer(parsed);
                 }
             } catch (clickErr) {
-                console.error("[Vseosvita v10.3] Auto-click error:", clickErr);
+                console.error("[Quiz Assistant v10.5] Auto-click error:", clickErr);
             }
 
             if (autoAdvanceNext && autopilotEnabled) {
