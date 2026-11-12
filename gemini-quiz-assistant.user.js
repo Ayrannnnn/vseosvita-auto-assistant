@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Vseosvita Direct Gemini Assistant
 // @namespace    https://vseosvita.ua/
-// @version      10.3
+// @version      10.3.1
 // @description  Авто-помощник v10.3 для Всеосвіти: Gemini и OpenRouter, Chain-of-Thought, анализ изображений/SVG/LaTeX, все типы вопросов, локальный кэш и резервные модели.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -119,7 +119,7 @@
             url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
             headers: {
                 "Content-Type": "application/json",
-                "x-goog-api-key": apiKey.trim()
+                "x-goog-api-key": useKey
             },
             data: JSON.stringify(Object.assign({
                 contents: [{ parts: [{ text: promptText }, ...images] }],
