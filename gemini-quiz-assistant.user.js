@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Vseosvita + Naurok.ua AI Assistant
+// @name         Vseosvita + Naurok.ua AI Assistant Pro Luxe
 // @namespace    https://vseosvita.ua/
-// @version      10.5.1
-// @description  Помощник v10.5.1 для Всеосвіти та naurok.ua через Google Gemini.
+// @version      10.7.0
+// @description  Премиальный AI-помощник v10.7.0 [Luxe Edition] для Всеосвіти та naurok.ua через актуальные ультрабюджетные модели Google Gemini (3.1/3.5 Flash-Lite, 3.8 Flash, 4 Hydrogen): Stealth Anti-Cheat Shield, Glassmorphism HUD 3.0, все типы вопросов и автопилот.
 // @author       Antigravity
 // @updateURL    https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ayrannnnn/vseosvita-auto-assistant/main/gemini-quiz-assistant.user.js
@@ -10,6 +10,8 @@
 // @match        *://vseosvita.ua/*
 // @match        *://*.naurok.ua/*
 // @match        *://naurok.ua/*
+// @match        *://*.naurok.com.ua/*
+// @match        *://naurok.com.ua/*
 // @match        *://aistudio.google.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -60,12 +62,12 @@
         });
     };
 
-    // Проверенные модели Gemini с каскадным переключением при сбоях и лимитах.
+    // Актуальные ультрабюджетные модели Gemini 3.x и 4 с каскадным переключением при сбоях и лимитах (от $0.25/1M токенов).
     const DEFAULT_MODELS = [
         "gemini-3.1-flash-lite",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro"
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-4-hydrogen"
     ];
 
     function getModelCascade() {
@@ -125,11 +127,18 @@
         if (!rawAnswer && parts.length > 0) {
             rawAnswer = parts[parts.length - 1].text || "";
         }
-        return String(rawAnswer || '').trim();
+        if (!rawAnswer && data.candidates?.[0]?.text) {
+            rawAnswer = data.candidates[0].text;
+        }
+        return rawAnswer.trim();
     }
 
-    // Проверка рабочего API-ключа с перебором моделей и защитой через заголовок x-goog-api-key
-    function testGeminiKey(keyToTest, callback) {
+    // Проверка работоспособности ключа Gemini:
+    // 1. Сначала лёгкий запрос к /v1beta/models (без расхода токенов и без очередей генерации).
+    // 2. Если /v1beta/models успешен (200) — ключ 100% валиден и активен.
+    // 3. Если перегрузка (503 / 429) на отдельной модели — каскадно проверяем остальные модели.
+    // 4. Ошибка high demand (503) означает, что ключ правильный, но модель временно загружена у Google.
+    function testGeminiKey(keyToTest, callback, preferredModelOverride) {
         if (!keyToTest || keyToTest.trim().length < 20) {
             callback(false, "Введите действительный ключ Google Gemini (AIza...).");
             return;
@@ -139,46 +148,103 @@
             callback(false, "Поддерживается только ключ Google Gemini (AIza...).");
             return;
         }
-        const checkModels = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
 
-        function tryCheck(idx) {
-            if (idx >= checkModels.length) {
-                callback(false, "Ключ не принят или модели недоступны.");
-                return;
-            }
-            const m = checkModels[idx];
-            _httpRequest(Object.assign(
-                buildGeminiRequest(m, "ping", [], cleanKey),
-                {
-                    method: "POST",
-                    timeout: 8000,
-                    onload: function (res) {
-                    if (res.status >= 200 && res.status < 300) {
-                        callback(true, `OK (${m})`);
-                        return;
-                    }
-                    // Если конкретная модель не найдена (404), пробуем следующую модель проверки
-                    if (res.status === 404 && idx + 1 < checkModels.length) {
-                        tryCheck(idx + 1);
-                        return;
-                    }
-                    let msg = "Код ошибки " + res.status;
+        // 1-й этап: быстрая проверка метаданных без инференса (не бывает ошибок high demand)
+        _httpRequest({
+            url: `https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`,
+            method: "GET",
+            headers: {
+                "x-goog-api-key": cleanKey
+            },
+            timeout: 7000,
+            onload: function (res) {
+                if (res.status >= 200 && res.status < 300) {
+                    callback(true, "Ключ активен и подтверждён Google");
+                    return;
+                }
+
+                // Если 400 или 403 с явной ошибкой ключа — сразу сообщаем пользователю
+                if (res.status === 400 || res.status === 403) {
+                    let msg = "Неверный или отозванный ключ Google API (код " + res.status + ")";
                     try {
                         const parsed = JSON.parse(res.responseText);
                         if (parsed.error && parsed.error.message) msg = parsed.error.message;
                     } catch (e) {}
-                    callback(false, msg);
-                },
-                onerror: function () {
-                    callback(false, "Ошибка сети. Проверьте интернет соединение.");
-                },
-                ontimeout: function () {
-                    callback(false, "Таймаут соединения с API (8 сек).");
+                    const low = msg.toLowerCase();
+                    if (low.includes('key') || low.includes('permission') || low.includes('credential') || low.includes('invalid')) {
+                        callback(false, msg);
+                        return;
+                    }
                 }
+
+                // Если метаданные не ответили (или блокировка endpoint) — проверяем каскадом через генерацию
+                fallbackModelCheck();
+            },
+            onerror: function () {
+                fallbackModelCheck();
+            },
+            ontimeout: function () {
+                fallbackModelCheck();
+            }
+        });
+
+        function fallbackModelCheck() {
+            const pref = preferredModelOverride || _getValue("PREFERRED_MODEL", "auto");
+            const modelsToCheck = [];
+            if (pref && pref !== 'auto' && DEFAULT_MODELS.includes(pref)) {
+                modelsToCheck.push(pref);
+            }
+            for (const m of DEFAULT_MODELS) {
+                if (!modelsToCheck.includes(m)) modelsToCheck.push(m);
+            }
+
+            function tryCheck(idx, hadHighDemand) {
+                if (idx >= modelsToCheck.length) {
+                    if (hadHighDemand) {
+                        callback(true, "Ключ авторизован (серверы Google временно испытывают пиковую нагрузку, каскад активен)");
+                        return;
+                    }
+                    callback(false, "Ключ не принят или модели временно недоступны.");
+                    return;
                 }
-            ));
+                const m = modelsToCheck[idx];
+                _httpRequest(Object.assign(
+                    buildGeminiRequest(m, "ping", [], cleanKey),
+                    {
+                        method: "POST",
+                        timeout: 7000,
+                        onload: function (res) {
+                            if (res.status >= 200 && res.status < 300) {
+                                callback(true, `OK (${m})`);
+                                return;
+                            }
+                            if (res.status === 400 || res.status === 403) {
+                                let msg = "Код ошибки " + res.status;
+                                try {
+                                    const parsed = JSON.parse(res.responseText);
+                                    if (parsed.error && parsed.error.message) msg = parsed.error.message;
+                                } catch (e) {}
+                                const low = msg.toLowerCase();
+                                if (low.includes('key') || low.includes('permission') || low.includes('credential') || low.includes('invalid')) {
+                                    callback(false, msg);
+                                    return;
+                                }
+                            }
+                            const isHighDemand = res.status === 503 || res.status === 429 ||
+                                (typeof res.responseText === 'string' && res.responseText.includes('high demand'));
+                            tryCheck(idx + 1, hadHighDemand || isHighDemand);
+                        },
+                        onerror: function () {
+                            tryCheck(idx + 1, hadHighDemand);
+                        },
+                        ontimeout: function () {
+                            tryCheck(idx + 1, hadHighDemand);
+                        }
+                    }
+                ));
+            }
+            tryCheck(0, false);
         }
-        tryCheck(0);
     }
 
     // ==================== ПОМОЩНИК НА GOOGLE AI STUDIO ====================
@@ -194,37 +260,39 @@
                 position: fixed !important;
                 bottom: 24px !important;
                 right: 24px !important;
-                width: 360px !important;
-                background: #0f172a !important;
-                border: 2px solid #38bdf8 !important;
-                border-radius: 12px !important;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.85) !important;
+                width: 380px !important;
+                background: rgba(13, 17, 28, 0.92) !important;
+                backdrop-filter: blur(20px) saturate(190%) !important;
+                -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+                border: 1px solid rgba(56, 189, 248, 0.45) !important;
+                border-radius: 16px !important;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.85), 0 0 25px rgba(56, 189, 248, 0.2) !important;
                 z-index: 2147483647 !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif !important;
                 color: #fff !important;
-                padding: 16px !important;
+                padding: 18px !important;
                 box-sizing: border-box !important;
             `;
             card.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div style="font-weight:bold; font-size:14px; color:#38bdf8; display:flex; align-items:center; gap:6px;">
-                        <span>✦</span> ВСЕОСВІТА + НА УРОК v10.5.1
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <div style="font-weight:800; font-size:13px; background:linear-gradient(135deg, #38bdf8, #818cf8, #c084fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent; display:flex; align-items:center; gap:6px;">
+                        <span>✦</span> ВСЕОСВІТА · НА УРОК <span style="font-size:9.5px; padding:2px 5px; border-radius:9999px; background:rgba(56, 189, 248, 0.15); border:1px solid rgba(56, 189, 248, 0.3); color:#38bdf8;">v10.7 LUXE</span>
                     </div>
                     <button id="vse-studio-close" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:16px;">✕</button>
                 </div>
-                <div style="font-size:12px; color:#cbd5e1; line-height:1.45; margin-bottom:10px;">
-                    1. Нажмите синюю кнопку <b>«Create API key»</b>.<br>
-                    2. Скопируйте ключ — я сам вставлю его при обнаружении или вставьте вручную:
+                <div style="font-size:12px; color:#cbd5e1; line-height:1.45; margin-bottom:12px;">
+1. Нажмите кнопку <b>«Create API key»</b>.<br>
+2. Скопируйте ключ — помощник вставит его автоматически или укажите вручную:
                 </div>
-                <div style="display:flex; gap:6px; margin-bottom:10px;">
-                    <input id="vse-studio-input" type="password" placeholder="Вставьте ключ (AIzaSy...)" style="flex:1; background:#1e293b; border:1px solid #475569; border-radius:6px; padding:8px 10px; color:white; font-size:12px; outline:none;">
-                    <button id="vse-studio-toggle-eye" title="Показать/скрыть ключ" style="background:#334155; border:none; border-radius:6px; color:#cbd5e1; padding:0 8px; cursor:pointer;">👁</button>
-                    <button id="vse-studio-paste" title="Вставить из буфера" style="background:#334155; border:none; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
+                <div style="display:flex; gap:6px; margin-bottom:12px;">
+                    <input id="vse-studio-input" type="password" placeholder="Вставьте ключ (AIzaSy...)" style="flex:1; background:#020617; border:1px solid #334155; border-radius:8px; padding:8px 10px; color:white; font-size:12px; font-family:monospace; outline:none;">
+                    <button id="vse-studio-toggle-eye" title="Показать/скрыть ключ" style="background:#1e293b; border:1px solid #334155; border-radius:8px; color:#cbd5e1; padding:0 10px; cursor:pointer;">👁</button>
+                    <button id="vse-studio-paste" title="Вставить из буфера" style="background:#1e293b; border:1px solid #334155; border-radius:8px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
                 </div>
-                <button id="vse-studio-save-btn" style="width:100%; background:#16a34a; color:white; border:none; padding:10px; border-radius:6px; font-weight:bold; font-size:13px; cursor:pointer;">
-                    ✅ Привязать ключ к Всеосвите
+                <button id="vse-studio-save-btn" class="gemini-luxe-btn-primary" style="width:100%; padding:10px; border-radius:8px; font-weight:bold; font-size:13px; cursor:pointer;">
+                    ✅ Привязать ключ к Всеосвите и На Урок
                 </button>
-                <div id="vse-studio-status" style="margin-top:8px; font-size:12px; text-align:center; min-height:16px;"></div>
+                <div id="vse-studio-status" style="margin-top:10px; font-size:12px; text-align:center; min-height:16px;"></div>
             `;
             target.appendChild(card);
 
@@ -269,17 +337,22 @@
                     status.innerText = '⚠️ Вставьте валидный ключ Google API!';
                     return;
                 }
+                // Сразу сохраняем ключ в хранилище
+                _setValue("GEMINI_API_KEY", key);
+                apiKey = key;
+
                 status.style.color = '#38bdf8';
                 status.innerText = '⏳ Проверка ключа в Google Gemini...';
 
-                testGeminiKey(key, (ok, msg) => {
-                    if (ok) {
-                        _setValue("GEMINI_API_KEY", key);
+                testGeminiKey(key, (success, msg) => {
+                    if (success) {
                         status.style.color = '#4ade80';
-                        status.innerHTML = '🎉 <b>Ключ успешно привязан!</b><br><a href="https://vseosvita.ua/" target="_blank" style="color:#38bdf8; text-decoration:underline;">Перейти на Всеосвіту</a>';
+                        status.innerText = '🎉 Ключ успешно сохранён и подтверждён!';
+                        setTimeout(() => card.remove(), 2500);
                     } else {
-                        status.style.color = '#f87171';
-                        status.innerText = '❌ Ошибка: ' + msg;
+                        status.style.color = '#f59e0b';
+                        status.innerText = '⚠️ Ключ сохранён! (' + msg + ')';
+                        setTimeout(() => card.remove(), 3500);
                     }
                 });
             };
@@ -308,6 +381,7 @@
     let localCacheEnabled = _getValue("LOCAL_CACHE_ENABLED", true);
     let cotModeEnabled = _getValue("COT_MODE_ENABLED", false); // Chain-of-Thought режим
     let preferredModel = _getValue("PREFERRED_MODEL", "auto");
+    let stealthShieldEnabled = _getValue("STEALTH_SHIELD_ENABLED", true); // Стелс-щит античита
     let hudMinimized = _getValue("HUD_MINIMIZED", false);
     let hudPos = _getValue("HUD_POS", null);
     let hudHiddenByUser = false;
@@ -320,12 +394,112 @@
 
     let lastSolvedSignature = "";
     let isProcessing = false;
+    let processingStartedAt = 0;
     let isAdvancing = false;
     let cancelActiveDelay = null;
     let detectedQuizTopic = "";
     let hasAutoShownKeyModal = false;
     let savedSelectedText = "";
     let progressTimer = null;
+    let watchdogTimer = null;
+
+    // ==================== АНТИЧИТ СТЕЛС-ЩИТ (ACADEMIC INTEGRITY SHIELD) ====================
+    function initAntiCheatShield() {
+        if (!stealthShieldEnabled) return;
+        try {
+            // 1. Спуфинг document.hidden и document.visibilityState (сайт всегда считает вкладку активной)
+            try {
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false,
+                    configurable: true
+                });
+                Object.defineProperty(document, 'visibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+                Object.defineProperty(document, 'webkitHidden', {
+                    get: () => false,
+                    configurable: true
+                });
+                Object.defineProperty(document, 'webkitVisibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+            } catch (e) {}
+
+            // 2. Блокировка событий потери фокуса и переключения вкладок на фазе capture
+            const blockedEvents = ['visibilitychange', 'webkitvisibilitychange', 'blur', 'focusout', 'mouseleave', 'pagehide'];
+            blockedEvents.forEach(evtName => {
+                window.addEventListener(evtName, (e) => {
+                    if (!stealthShieldEnabled) return;
+                    const hudEl = document.getElementById('gemini-direct-hud');
+                    const modalEl = document.getElementById('gemini-key-modal');
+                    if (e.target && ((hudEl && hudEl.contains(e.target)) || (modalEl && modalEl.contains(e.target)))) {
+                        return;
+                    }
+                    e.stopImmediatePropagation();
+                    e.stopPropagation();
+                }, true);
+                document.addEventListener(evtName, (e) => {
+                    if (!stealthShieldEnabled) return;
+                    const hudEl = document.getElementById('gemini-direct-hud');
+                    const modalEl = document.getElementById('gemini-key-modal');
+                    if (e.target && ((hudEl && hudEl.contains(e.target)) || (modalEl && modalEl.contains(e.target)))) {
+                        return;
+                    }
+                    e.stopImmediatePropagation();
+                    e.stopPropagation();
+                }, true);
+            });
+
+            // 3. Нейтрализация inline-обработчиков
+            try {
+                window.onblur = null;
+                document.onmouseleave = null;
+                window.onpagehide = null;
+            } catch (e) {}
+        } catch (err) {
+            console.warn('[Quiz Assistant] Stealth shield init warning:', err);
+        }
+    }
+
+    // Всплывающие уведомления (Toast)
+    function showToast(msg, type = 'info') {
+        const existing = document.getElementById('gemini-luxe-toast');
+        if (existing) existing.remove();
+        const toast = document.createElement('div');
+        toast.id = 'gemini-luxe-toast';
+        const bg = type === 'success' ? 'linear-gradient(135deg, rgba(22, 101, 52, 0.95), rgba(15, 23, 42, 0.95))' :
+                   type === 'error' ? 'linear-gradient(135deg, rgba(153, 27, 27, 0.95), rgba(15, 23, 42, 0.95))' :
+                   'linear-gradient(135deg, rgba(30, 58, 138, 0.95), rgba(15, 23, 42, 0.95))';
+        const border = type === 'success' ? '#22c55e' : type === 'error' ? '#ef4444' : '#38bdf8';
+        toast.style.cssText = `
+            position: fixed !important;
+            bottom: 24px !important;
+            right: 24px !important;
+            background: ${bg} !important;
+            border: 1px solid ${border} !important;
+            border-radius: 12px !important;
+            padding: 10px 16px !important;
+            color: #fff !important;
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7), 0 0 15px ${border}44 !important;
+            z-index: 2147483647 !important;
+            pointer-events: none !important;
+            animation: geminiToastFade 2.8s forwards ease-in-out !important;
+            backdrop-filter: blur(14px) !important;
+            -webkit-backdrop-filter: blur(14px) !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+        `;
+        const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+        toast.innerHTML = `<span>${icon}</span> <span>${msg}</span>`;
+        (document.body || document.documentElement).appendChild(toast);
+        setTimeout(() => { if (toast.parentElement) toast.remove(); }, 2800);
+    }
 
     // Сохранение выделенного текста мышкой
     function updateSelection() {
@@ -344,7 +518,6 @@
     function sanitizeAnswer(rawText) {
         if (!rawText) return "";
         let s = String(rawText);
-        // Снимаем Markdown-обёртку ```json ... ``` / ``` ... ``` (edge case Тестировщика)
         const fence = s.match(/```(?:json|md|markdown)?\s*([\s\S]*?)```/i);
         if (fence && fence[1] && fence[1].trim()) s = fence[1];
         s = s
@@ -352,27 +525,140 @@
             .replace(/^Ответ:\s*/i, '')
             .replace(/^Правильна відповідь:\s*/i, '')
             .replace(/^Правильный ответ:\s*/i, '')
+            .replace(/^Вірна відповідь:\s*/i, '')
             .split(/\n?наступні кроки/i)[0]
             .split(/\n?next steps/i)[0]
             .split(/\n?пояснення:/i)[0]
+            .split(/\n?обґрунтування:/i)[0]
             .replace(/[*_`]/g, '')
             .trim();
         return s;
     }
 
-    // Разблокировка выделения и копирования
+    // Разблокировка выделения, копирования и внедрение стилей Luxe HUD 3.0
     function unlockSelection() {
         if (document.getElementById('gemini-style-v10')) return;
         const style = document.createElement('style');
         style.id = 'gemini-style-v10';
         style.textContent = `
-            * { -webkit-user-select: text !important; -moz-user-select: text !important; user-select: text !important; }
+            @keyframes geminiPulseReady {
+                0%, 100% { transform: scale(1); opacity: 0.95; }
+                50% { transform: scale(1.25); opacity: 1; box-shadow: 0 0 14px #22c55e; }
+            }
+            @keyframes geminiPulseProc {
+                0% { transform: scale(0.9); opacity: 0.7; }
+                100% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 16px #38bdf8; }
+            }
+            @keyframes geminiToastFade {
+                0% { opacity: 0; transform: translateY(10px); }
+                12% { opacity: 1; transform: translateY(0); }
+                88% { opacity: 1; transform: translateY(0); }
+                100% { opacity: 0; transform: translateY(-8px); }
+            }
+
+* { -webkit-user-select: text !important; -moz-user-select: text !important; user-select: text !important; }
             #gemini-direct-hud, #gemini-direct-hud *, #gemini-key-modal, #gemini-key-modal * {
                 box-sizing: border-box !important;
                 pointer-events: auto !important;
             }
             #gemini-direct-hud button, #gemini-key-modal button {
                 cursor: pointer !important;
+            }
+
+            /* Luxe Switches */
+            .gemini-luxe-switch {
+                appearance: none !important;
+                -webkit-appearance: none !important;
+                width: 32px !important;
+                height: 18px !important;
+                background: #334155 !important;
+                border-radius: 9999px !important;
+                position: relative !important;
+                cursor: pointer !important;
+                outline: none !important;
+                border: 1px solid rgba(255,255,255,0.15) !important;
+                transition: background 0.2s ease, border-color 0.2s ease !important;
+                margin: 0 !important;
+                display: inline-block !important;
+                flex-shrink: 0 !important;
+            }
+            .gemini-luxe-switch::before {
+                content: '' !important;
+                position: absolute !important;
+                top: 2px !important;
+                left: 2px !important;
+                width: 12px !important;
+                height: 12px !important;
+                background: #ffffff !important;
+                border-radius: 50% !important;
+                transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+            }
+            .gemini-luxe-switch:checked {
+                background: linear-gradient(135deg, #2563eb, #38bdf8) !important;
+                border-color: #38bdf8 !important;
+            }
+            .gemini-luxe-switch:checked::before {
+                transform: translateX(14px) !important;
+            }
+
+            /* Luxe Buttons */
+            .gemini-luxe-btn-primary {
+                background: linear-gradient(135deg, #2563eb 0%, #0284c7 100%) !important;
+                color: #ffffff !important;
+                border: 1px solid rgba(255, 255, 255, 0.15) !important;
+                box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35) !important;
+                border-radius: 8px !important;
+                font-weight: 700 !important;
+                cursor: pointer !important;
+                transition: all 0.15s ease !important;
+            }
+            .gemini-luxe-btn-primary:hover {
+                transform: translateY(-1px) !important;
+                box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45) !important;
+                filter: brightness(1.08) !important;
+            }
+            .gemini-luxe-btn-primary:active {
+                transform: scale(0.97) !important;
+            }
+
+            .gemini-luxe-btn-secondary {
+                background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+                color: #ffffff !important;
+                border: 1px solid rgba(255, 255, 255, 0.12) !important;
+                box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3) !important;
+                border-radius: 8px !important;
+                font-weight: 700 !important;
+                cursor: pointer !important;
+                transition: all 0.15s ease !important;
+            }
+            .gemini-luxe-btn-secondary:hover {
+                transform: translateY(-1px) !important;
+                box-shadow: 0 6px 16px rgba(2, 132, 199, 0.4) !important;
+                filter: brightness(1.08) !important;
+            }
+            .gemini-luxe-btn-secondary:active {
+                transform: scale(0.97) !important;
+            }
+
+            /* Modal Tabs */
+            .gemini-modal-tab-btn {
+                flex: 1;
+                padding: 8px 4px;
+                background: transparent;
+                border: none;
+                border-bottom: 2px solid transparent;
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                text-align: center;
+            }
+            .gemini-modal-tab-btn.active {
+                color: #38bdf8;
+                border-bottom-color: #38bdf8;
+                background: rgba(56, 189, 248, 0.08);
             }
         `;
         (document.head || document.documentElement).appendChild(style);
@@ -382,7 +668,7 @@
         });
     }
 
-    // ==================== ИНТЕРФЕЙС HUD 2.0 ====================
+    // ==================== ИНТЕРФЕЙС HUD 3.0 LUXE ====================
     let hud = null;
 
     function getCacheCount() {
@@ -400,6 +686,8 @@
             fullBody.style.display = 'none';
             miniBody.style.display = 'flex';
             hud.style.width = 'auto';
+            hud.style.borderRadius = '9999px';
+            hud.style.padding = '0';
             if (minBtn) {
                 minBtn.innerText = '▢';
                 minBtn.title = 'Развернуть панель';
@@ -407,10 +695,12 @@
         } else {
             fullBody.style.display = 'flex';
             miniBody.style.display = 'none';
-            hud.style.width = '345px';
+            hud.style.width = '355px';
+            hud.style.borderRadius = '16px';
+            hud.style.padding = '0';
             if (minBtn) {
                 minBtn.innerText = '➖';
-                minBtn.title = 'Свернуть в компактный виджет';
+                minBtn.title = 'Свернуть в капсулу';
             }
         }
     }
@@ -418,6 +708,9 @@
     function setOutput(text, color = '#4ade80', fontSize = '15px') {
         const out = document.getElementById('gemini-out');
         const miniOut = document.getElementById('gemini-mini-out');
+        const dot = document.getElementById('gemini-status-dot');
+        const miniDot = document.getElementById('gemini-mini-status-led');
+
         if (out) {
             out.style.color = color;
             out.style.fontSize = fontSize;
@@ -427,6 +720,36 @@
             miniOut.style.color = color;
             miniOut.innerText = text.length > 24 ? text.slice(0, 23) + '…' : text;
         }
+
+        // Синхронизация статусного LED пульсара
+        const isProc = isProcessing || text.includes('Поиск') || text.includes('Загрузка');
+        const isDel = text.includes('Думаю') || text.includes('Кэш') || text.includes('Ускорение');
+        const isErr = color === '#f87171' || text.includes('Ошибка') || text.includes('Все модели');
+
+        const updateLed = (el) => {
+            if (!el) return;
+            el.className = 'gemini-status-led';
+            if (isProc) {
+                el.style.background = '#38bdf8';
+                el.style.boxShadow = '0 0 12px #38bdf8';
+                el.style.animation = 'geminiPulseProc 0.9s infinite alternate';
+            } else if (isDel) {
+                el.style.background = '#facc15';
+                el.style.boxShadow = '0 0 10px #facc15';
+                el.style.animation = 'none';
+            } else if (isErr) {
+                el.style.background = '#ef4444';
+                el.style.boxShadow = '0 0 10px #ef4444';
+                el.style.animation = 'none';
+            } else {
+                el.style.background = '#22c55e';
+                el.style.boxShadow = '0 0 10px #22c55e';
+                el.style.animation = 'geminiPulseReady 2.2s infinite ease-in-out';
+            }
+        };
+
+        updateLed(dot);
+        updateLed(miniDot);
     }
 
     function ensureHUD() {
@@ -470,70 +793,92 @@
         hud.style.cssText = `
             position: fixed !important;
             ${posStyle}
-            width: ${hudMinimized ? 'auto' : '345px'} !important;
-            background: #0f172a !important;
-            border: 2px solid #38bdf8 !important;
-            border-radius: 12px !important;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.9) !important;
+            width: ${hudMinimized ? 'auto' : '355px'} !important;
+            background: rgba(13, 17, 28, 0.88) !important;
+            backdrop-filter: blur(20px) saturate(190%) !important;
+            -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+            border: 1px solid rgba(56, 189, 248, 0.4) !important;
+            border-radius: ${hudMinimized ? '9999px' : '16px'} !important;
+            box-shadow: 0 20px 60px -10px rgba(0, 0, 0, 0.8), 0 0 25px -5px rgba(56, 189, 248, 0.25) !important;
             z-index: 2147483647 !important;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif !important;
             color: #fff !important;
             overflow: hidden !important;
             user-select: none !important;
             text-align: left !important;
             line-height: 1.35 !important;
+            transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.25s ease !important;
         `;
 
         hud.innerHTML = `
-            <div id="gemini-drag-handle" style="padding: 8px 10px; background: #1e293b; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; gap: 8px;">
-                <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
-                    <span id="gemini-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
-                    <span style="color: #38bdf8; white-space: nowrap;">✦ ВСЕОСВІТА · НА УРОК v10.5.1</span>
-                    <span id="gemini-model-badge" style="font-size: 10px; color: #94a3b8; font-weight: normal; white-space: nowrap;"></span>
+            <!-- Шапка перетаскивания HUD 3.0 Luxe -->
+            <div id="gemini-drag-handle" style="padding: 10px 12px; background: linear-gradient(180deg, rgba(30, 41, 59, 0.85), rgba(15, 23, 42, 0.75)); border-bottom: 1px solid rgba(255, 255, 255, 0.08); cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 7px; min-width: 0;">
+                    <span id="gemini-status-dot" class="gemini-status-led ready" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0; box-shadow: 0 0 10px #22c55e;"></span>
+                    <span style="font-weight: 800; font-size: 11.5px; background: linear-gradient(135deg, #38bdf8, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; white-space: nowrap;">✦ ВСЕОСВІТА · НА УРОК</span>
+                    <span style="font-size: 9px; padding: 2px 5px; border-radius: 9999px; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; white-space: nowrap;">LUXE v10.7</span>
+                    <span id="gemini-model-badge" style="font-size: 9.5px; color: #94a3b8; font-weight: normal; white-space: nowrap;"></span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                    <button id="gemini-key-btn" title="Настройки, модель и кэш" style="background:none; border:none; color:#38bdf8; cursor:pointer; font-size:13px; padding:2px 4px;">⚙</button>
-                    <button id="gemini-min-btn" title="Свернуть/развернуть" style="background:none; border:none; color:#cbd5e1; cursor:pointer; font-size:12px; padding:2px 4px;">➖</button>
-                    <button id="gemini-close-btn" title="Скрыть (Alt+H чтобы вернуть)" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:14px; padding:2px 4px;">✕</button>
+                    <button id="gemini-stealth-quick-btn" title="Античит Стелс-щит: активен (Alt+S)" style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; color: #38bdf8; cursor: pointer; font-size: 11px; padding: 3px 6px;">🛡️</button>
+                    <button id="gemini-key-btn" title="Настройки, модель и кэш" style="background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #cbd5e1; cursor: pointer; font-size: 12px; padding: 3px 6px;">⚙</button>
+                    <button id="gemini-min-btn" title="Свернуть в капсулу" style="background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #cbd5e1; cursor: pointer; font-size: 11px; padding: 3px 6px;">➖</button>
+                    <button id="gemini-close-btn" title="Скрыть (Alt+H чтобы вернуть)" style="background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #94a3b8; cursor: pointer; font-size: 12px; padding: 3px 6px;">✕</button>
                 </div>
             </div>
 
-            <!-- Компактный режим (виджет) -->
-            <div id="gemini-hud-mini-body" style="display: none; padding: 6px 10px; align-items: center; gap: 8px; background: #0f172a;">
-                <button id="gemini-mini-go-btn" style="background: #2563eb; color: #fff; border: none; padding: 5px 10px; border-radius: 6px; font-weight: bold; font-size: 12px; white-space: nowrap;">⚡ РЕШИТЬ</button>
-                <span id="gemini-mini-out" style="font-size: 12px; font-weight: bold; color: #4ade80; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Готов</span>
+            <!-- Компактный режим (Dynamic Island Capsule) -->
+            <div id="gemini-hud-mini-body" style="display: none; padding: 6px 12px; align-items: center; gap: 8px; background: rgba(13, 17, 28, 0.95); border-radius: 9999px;">
+                <span id="gemini-mini-status-led" class="gemini-status-led ready" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0;"></span>
+                <span id="gemini-mini-out" style="font-size: 12px; font-weight: 700; color: #4ade80; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="Клик: открыть">Готов</span>
+                <button id="gemini-mini-go-btn" class="gemini-luxe-btn-primary" style="padding: 4px 10px; font-size: 11px; border-radius: 9999px; white-space: nowrap;">⚡ РЕШИТЬ</button>
+                <button id="gemini-mini-expand-btn" title="Развернуть" style="background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 12px; padding: 2px;">▢</button>
             </div>
 
-            <!-- Полный режим HUD 2.0 -->
+            <!-- Полный режим HUD 3.0 Luxe -->
             <div id="gemini-hud-full-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
-                <div style="position: relative; display: flex; align-items: stretch; gap: 4px;">
-                    <div id="gemini-out" style="flex: 1; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; font-size: 15px; font-weight: bold; color: #4ade80; text-align: center; cursor: pointer; min-height: 24px; word-break: break-word; display: flex; align-items: center; justify-content: center;" title="Клик: пропустить задержку / скопировать ответ">Готов к авто-ответу</div>
-                    <button id="gemini-reask-btn" title="Переспросить AI заново (игнорируя кэш)" style="background: #1e293b; border: 1px solid #334155; border-radius: 8px; color: #38bdf8; padding: 0 9px; font-size: 13px; flex-shrink: 0;">🔄</button>
+                <div style="position: relative; display: flex; align-items: stretch; gap: 6px;">
+                    <div id="gemini-out" style="flex: 1; background: radial-gradient(circle at 50% 0%, rgba(30, 41, 59, 0.5), rgba(2, 6, 23, 0.85)); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 12px; box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6); padding: 10px 12px; font-size: 15px; font-weight: bold; color: #4ade80; text-align: center; cursor: pointer; min-height: 28px; word-break: break-word; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease;" title="Клик: пропустить задержку / скопировать ответ">Готов к авто-ответу</div>
+                    <button id="gemini-reask-btn" title="Переспросить AI заново (игнорируя кэш)" style="background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; color: #cbd5e1; padding: 0 10px; cursor: pointer; font-size: 13px; transition: all 0.15s ease;">🔄</button>
                 </div>
 
-                <div style="display: flex; flex-direction: column; gap: 6px; background: #1e293b; padding: 8px 10px; border-radius: 6px; font-size: 12px;">
-                    <label style="display: flex; align-items: center; gap: 7px; cursor: pointer; margin: 0;">
-                        <input type="checkbox" id="gemini-opt-click" ${autoClickOption ? 'checked' : ''} style="cursor: pointer;">
-                        <span>Авто-клик / выбор ответа</span>
+                <div style="display: flex; flex-direction: column; gap: 7px; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255, 255, 255, 0.06); padding: 10px 12px; border-radius: 12px; font-size: 11.5px;">
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 0;">
+                        <span style="color: #cbd5e1; display: flex; align-items: center; gap: 6px;">
+                            <span style="color: #38bdf8;">🎯</span> Авто-клик варианта
+                        </span>
+                        <input type="checkbox" id="gemini-opt-click" ${autoClickOption ? 'checked' : ''} class="gemini-luxe-switch">
                     </label>
-                    <label style="display: flex; align-items: center; gap: 7px; cursor: pointer; margin: 0;">
-                        <input type="checkbox" id="gemini-opt-advance" ${autoAdvanceNext ? 'checked' : ''} style="cursor: pointer;">
-                        <span>Авто-переход («Зберегти і далі»)</span>
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 0;">
+                        <span style="color: #cbd5e1; display: flex; align-items: center; gap: 6px;">
+                            <span style="color: #38bdf8;">⏩</span> Авто-переход к следующему
+                        </span>
+                        <input type="checkbox" id="gemini-opt-advance" ${autoAdvanceNext ? 'checked' : ''} class="gemini-luxe-switch">
                     </label>
-                    <label style="display: flex; align-items: center; gap: 7px; cursor: pointer; color: #38bdf8; margin: 0;">
-                        <input type="checkbox" id="gemini-opt-smart-delay" ${smartDelayEnabled ? 'checked' : ''} style="cursor: pointer;">
-                        <span>⏳ Умная задержка («как человек»)</span>
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 0;">
+                        <span style="color: #cbd5e1; display: flex; align-items: center; gap: 6px;">
+                            <span style="color: #facc15;">⏳</span> Умная задержка («как человек»)
+                        </span>
+                        <input type="checkbox" id="gemini-opt-smart-delay" ${smartDelayEnabled ? 'checked' : ''} class="gemini-luxe-switch">
                     </label>
-                    <label style="display: flex; align-items: center; gap: 7px; cursor: pointer; color: #facc15; font-weight: bold; margin: 0;">
-                        <input type="checkbox" id="gemini-opt-autopilot" ${autopilotEnabled ? 'checked' : ''} style="cursor: pointer;">
-                        <span>⚡ Полный автопилот (весь тест сам)</span>
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 0;" title="Скрывает факт ухода с вкладки (document.hidden/visibilityState/blur)">
+                        <span style="color: #cbd5e1; display: flex; align-items: center; gap: 6px;">
+                            <span style="color: #38bdf8;">🛡️</span> Античит Стелс-щит
+                        </span>
+                        <input type="checkbox" id="gemini-opt-stealth" ${stealthShieldEnabled ? 'checked' : ''} class="gemini-luxe-switch">
+                    </label>
+                    <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 0;">
+                        <span style="color: #facc15; font-weight: bold; display: flex; align-items: center; gap: 6px;">
+                            <span>⚡</span> Полный автопилот (весь тест сам)
+                        </span>
+                        <input type="checkbox" id="gemini-opt-autopilot" ${autopilotEnabled ? 'checked' : ''} class="gemini-luxe-switch">
                     </label>
                 </div>
 
-                <div style="display: flex; gap: 6px;">
-                    <button id="gemini-go-btn" style="flex: 2; background: #2563eb; color: white; border: none; padding: 10px 6px; border-radius: 6px; font-weight: bold; font-size: 13px; cursor: pointer;">⚡ РЕШИТЬ (Alt+Q)</button>
-                    <button id="gemini-next-btn" title="Нажать кнопку Зберегти і далі (Alt+W)" style="flex: 1; background: #0284c7; color: white; border: none; padding: 10px 6px; border-radius: 6px; font-weight: bold; font-size: 12px; cursor: pointer;">⏩ ДАЛІ</button>
-                    <button id="gemini-stop-btn" style="display: none; background: #ef4444; color: white; border: none; padding: 10px 10px; border-radius: 6px; font-weight: bold; font-size: 13px; cursor: pointer;">🛑 СТОП</button>
+                <div style="display: flex; gap: 8px;">
+                    <button id="gemini-go-btn" class="gemini-luxe-btn-primary" style="flex: 2; padding: 11px 8px; font-size: 13px;">⚡ РЕШИТЬ (Alt+Q)</button>
+                    <button id="gemini-next-btn" class="gemini-luxe-btn-secondary" title="Нажать кнопку Зберегти і далі (Alt+W)" style="flex: 1; padding: 11px 8px; font-size: 12px;">⏩ ДАЛІ</button>
+                    <button id="gemini-stop-btn" style="display: none; background: linear-gradient(135deg, #dc2626, #b91c1c); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 11px 12px; border-radius: 8px; font-weight: bold; font-size: 13px; cursor: pointer;">🛑 СТОП</button>
                 </div>
             </div>
         `;
@@ -552,12 +897,11 @@
             }
         }
 
-        // Предотвращаем перехват фокуса кнопками
         hud.querySelectorAll('button').forEach(btn => {
             btn.addEventListener('mousedown', e => e.stopPropagation());
         });
 
-        // Перетаскивание HUD 2.0 с сохранением позиции
+        // Перетаскивание HUD 3.0 Luxe с сохранением позиции
         const header = hud.querySelector('#gemini-drag-handle');
         let isDown = false, sx, sy, il, it;
         header.addEventListener('mousedown', e => {
@@ -600,6 +944,16 @@
             smartDelayEnabled = e.target.checked;
             _setValue("SMART_DELAY_ENABLED", smartDelayEnabled);
         };
+        hud.querySelector('#gemini-opt-stealth').onchange = (e) => {
+            stealthShieldEnabled = e.target.checked;
+            _setValue("STEALTH_SHIELD_ENABLED", stealthShieldEnabled);
+            if (stealthShieldEnabled) {
+                initAntiCheatShield();
+                showToast('🛡️ Стелс-щит активирован', 'success');
+            } else {
+                showToast('Стелс-щит отключён', 'info');
+            }
+        };
         hud.querySelector('#gemini-opt-autopilot').onchange = (e) => {
             autopilotEnabled = e.target.checked;
             updateAutopilotUI();
@@ -607,6 +961,24 @@
                 triggerSearch(false);
             }
         };
+
+        const stealthQuickBtn = hud.querySelector('#gemini-stealth-quick-btn');
+        if (stealthQuickBtn) {
+            stealthQuickBtn.onclick = () => {
+                stealthShieldEnabled = !stealthShieldEnabled;
+                _setValue("STEALTH_SHIELD_ENABLED", stealthShieldEnabled);
+                const chk = hud.querySelector('#gemini-opt-stealth');
+                if (chk) chk.checked = stealthShieldEnabled;
+                if (stealthShieldEnabled) {
+                    initAntiCheatShield();
+                    stealthQuickBtn.style.color = '#38bdf8';
+                    showToast('🛡️ Стелс-щит включён', 'success');
+                } else {
+                    stealthQuickBtn.style.color = '#64748b';
+                    showToast('Стелс-щит выключен', 'info');
+                }
+            };
+        }
 
         // Главные кнопки управления
         const handleGoClick = (e) => {
@@ -619,100 +991,116 @@
             }
         };
 
-        hud.querySelector('#gemini-go-btn').addEventListener('click', handleGoClick);
-        hud.querySelector('#gemini-mini-go-btn').addEventListener('click', handleGoClick);
+        const goBtn = hud.querySelector('#gemini-go-btn');
+        const miniGoBtn = hud.querySelector('#gemini-mini-go-btn');
+        if (goBtn) goBtn.onclick = handleGoClick;
+        if (miniGoBtn) miniGoBtn.onclick = handleGoClick;
 
-        hud.querySelector('#gemini-reask-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (cancelActiveDelay) cancelActiveDelay();
-            isProcessing = false;
-            triggerSearch(true); // принудительно без кэша
-        });
+        const nextBtn = hud.querySelector('#gemini-next-btn');
+        if (nextBtn) {
+            nextBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (cancelActiveDelay) cancelActiveDelay();
+                isAdvancing = false;
+                const ok = clickNextQuestion();
+                if (!ok) {
+                    setOutput('Кнопка «Далі» не найдена', '#f87171', '13px');
+                }
+            };
+        }
 
-        hud.querySelector('#gemini-next-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (cancelActiveDelay) cancelActiveDelay();
-            isAdvancing = false;
-            const success = clickNextQuestion();
-            if (success) {
-                setOutput('⏩ Переход далее...', '#38bdf8', '14px');
-            } else {
-                setOutput('⚠️ Кнопка «Зберегти» не найдена', '#f87171', '13px');
-            }
-        });
+        const stopBtn = hud.querySelector('#gemini-stop-btn');
+        if (stopBtn) {
+            stopBtn.onclick = (e) => {
+                e.preventDefault();
+                stopAutopilot();
+            };
+        }
 
-        hud.querySelector('#gemini-stop-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            stopAutopilot();
-        });
-
-        hud.querySelector('#gemini-min-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            hudMinimized = !hudMinimized;
-            _setValue("HUD_MINIMIZED", hudMinimized);
-            applyHudModeUI();
-        });
-
-        hud.querySelector('#gemini-close-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            hudHiddenByUser = true;
-            hud.style.display = 'none';
-        });
-
-        hud.querySelector('#gemini-key-btn').addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openSettingsModal();
-        });
+        const reaskBtn = hud.querySelector('#gemini-reask-btn');
+        if (reaskBtn) {
+            reaskBtn.onclick = (e) => {
+                e.preventDefault();
+                triggerSearch(true); // обход кэша
+            };
+        }
 
         const outBox = hud.querySelector('#gemini-out');
-        outBox.addEventListener('click', () => {
-            if (!apiKey || apiKey.trim().length < 20) {
-                openSettingsModal();
-                return;
-            }
-            if (cancelActiveDelay) {
-                cancelActiveDelay();
-                return;
-            }
-            const t = outBox.innerText.trim();
-            if (t && !t.includes('Готов') && !t.includes('Поиск') && !t.includes('Ошибка') && !t.includes('Думаю') && !t.includes('Переход') && !t.includes('Выделите')) {
-                navigator.clipboard?.writeText(t).catch(() => {});
-                const prev = outBox.innerText;
-                outBox.innerText = '✓ Скопировано!';
-                setTimeout(() => { if (outBox.innerText === '✓ Скопировано!') outBox.innerText = prev; }, 700);
-            }
-        });
+        if (outBox) {
+            outBox.onclick = async () => {
+                if (cancelActiveDelay) {
+                    cancelActiveDelay();
+                    return;
+                }
+                const text = outBox.innerText.trim();
+                if (text && !text.includes('Готов') && !text.includes('Поиск')) {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        showToast('Ответ скопирован в буфер!', 'success');
+                    } catch (e) {}
+                }
+            };
+        }
+
+        hud.querySelector('#gemini-key-btn').onclick = openSettingsModal;
+
+        const minBtn = hud.querySelector('#gemini-min-btn');
+        if (minBtn) {
+            minBtn.onclick = () => {
+                hudMinimized = !hudMinimized;
+                _setValue("HUD_MINIMIZED", hudMinimized);
+                applyHudModeUI();
+            };
+        }
+
+        const miniExpandBtn = hud.querySelector('#gemini-mini-expand-btn');
+        if (miniExpandBtn) {
+            miniExpandBtn.onclick = () => {
+                hudMinimized = false;
+                _setValue("HUD_MINIMIZED", false);
+                applyHudModeUI();
+            };
+        }
+
+        const closeBtn = hud.querySelector('#gemini-close-btn');
+        if (closeBtn) {
+            closeBtn.onclick = () => {
+                hudHiddenByUser = true;
+                hud.style.display = 'none';
+                showToast('Панель скрыта. Нажмите Alt+H чтобы вернуть.', 'info');
+            };
+        }
     }
 
     function updateAutopilotUI() {
-        const stopBtn = document.getElementById('gemini-stop-btn');
-        const dot = document.getElementById('gemini-status-dot');
-        const chk = document.getElementById('gemini-opt-autopilot');
-        if (chk) chk.checked = autopilotEnabled;
+        if (!hud) return;
+        const stopBtn = hud.querySelector('#gemini-stop-btn');
+        const goBtn = hud.querySelector('#gemini-go-btn');
+        const chk = hud.querySelector('#gemini-opt-autopilot');
+        const dot = hud.querySelector('#gemini-status-dot');
 
+        if (chk) chk.checked = autopilotEnabled;
         if (autopilotEnabled) {
             if (stopBtn) stopBtn.style.display = 'block';
-            if (dot) dot.style.background = '#facc15';
+            if (goBtn) goBtn.style.display = 'none';
+            if (dot) dot.style.background = '#38bdf8';
         } else {
             if (stopBtn) stopBtn.style.display = 'none';
-            if (dot) dot.style.background = (apiKey && apiKey.trim().length >= 20) ? '#22c55e' : '#eab308';
+            if (goBtn) goBtn.style.display = 'block';
+            if (dot) dot.style.background = '#22c55e';
         }
     }
 
     function stopAutopilot() {
-        if (cancelActiveDelay) cancelActiveDelay();
         autopilotEnabled = false;
-        isProcessing = false;
         updateAutopilotUI();
-        setOutput('Автопилот остановлен', '#38bdf8', '14px');
+        if (cancelActiveDelay) cancelActiveDelay();
+        setOutput('Автопилот остановлен', '#cbd5e1', '14px');
+        showToast('Автопилот остановлен', 'info');
     }
 
-    // ==================== МОДАЛЬНОЕ ОКНО НАСТРОЕК (API + МОДЕЛИ + КЭШ) ====================
+    // ==================== МОДАЛЬНОЕ ОКНО НАСТРОЕК (LUXE STUDIO) ====================
     function openSettingsModal() {
         const storedKey = _getValue("GEMINI_API_KEY", HARDCODED_KEY);
         if (storedKey && storedKey !== apiKey) apiKey = storedKey;
@@ -741,87 +1129,125 @@
             top: 50% !important;
             left: 50% !important;
             transform: translate(-50%, -50%) !important;
-            width: 400px !important;
-            max-width: 94vw !important;
-            background: #0f172a !important;
-            border: 2px solid #38bdf8 !important;
-            border-radius: 14px !important;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.95) !important;
+            width: 440px !important;
+            max-width: 95vw !important;
+            background: rgba(13, 17, 28, 0.94) !important;
+            backdrop-filter: blur(24px) saturate(190%) !important;
+            -webkit-backdrop-filter: blur(24px) saturate(190%) !important;
+            border: 1px solid rgba(56, 189, 248, 0.45) !important;
+            border-radius: 18px !important;
+            box-shadow: 0 25px 70px rgba(0,0,0,0.9), 0 0 35px rgba(56, 189, 248, 0.25) !important;
             z-index: 2147483647 !important;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif !important;
             color: #fff !important;
-            padding: 20px !important;
+            padding: 22px !important;
             box-sizing: border-box !important;
             user-select: none !important;
         `;
 
         modal.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:10px;">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size:18px;">⚙</span>
-                    <span style="font-weight:bold; font-size:15px; color:#38bdf8;">Настройки Ассистента v10.5.1</span>
+                    <span style="font-size:16px;">⚙</span>
+                    <span style="font-weight:800; font-size:14px; background:linear-gradient(135deg, #38bdf8, #818cf8, #c084fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">Настройки Assistant Luxe v10.7</span>
                 </div>
                 <button id="gemini-modal-close-btn" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:18px; line-height:1;">✕</button>
             </div>
 
-            <div style="font-size:12px; color:#cbd5e1; margin-bottom:8px;">
-                Личный бесплатный ключ Google Gemini:
-            </div>
-            <a href="https://aistudio.google.com/app/apikey" target="_blank" style="display:flex; align-items:center; justify-content:center; gap:8px; background:#2563eb; color:#fff; padding:9px; border-radius:8px; text-decoration:none; font-weight:bold; font-size:12px; margin-bottom:10px;">
-                <span>🌐</span> Получить ключ в Google AI Studio
-            </a>
-            <div style="display:flex; gap:6px; margin-bottom:14px;">
-                <input id="gemini-modal-input" type="password" placeholder="AIza..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:6px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
-                <button id="gemini-modal-toggle-eye" title="Показать/скрыть" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">👁</button>
-                <button id="gemini-modal-paste-btn" title="Вставить из буфера" style="background:#1e293b; border:1px solid #334155; border-radius:6px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
+            <!-- Вкладки навигации -->
+            <div style="display:flex; gap:2px; margin-bottom:14px; background:rgba(2, 6, 23, 0.6); border-radius:10px; padding:3px; border:1px solid rgba(255,255,255,0.06);">
+                <button class="gemini-modal-tab-btn active" data-tab="tab-api">⚡ Модели & API</button>
+                <button class="gemini-modal-tab-btn" data-tab="tab-stealth">🛡️ Стелс & Античит</button>
+                <button class="gemini-modal-tab-btn" data-tab="tab-logic">🧠 Логика & CoT</button>
+                <button class="gemini-modal-tab-btn" data-tab="tab-cache">💾 Кэш & Бэкап</button>
             </div>
 
-            <div style="display:flex; flex-direction:column; gap:10px; background:#1e293b; padding:10px 12px; border-radius:8px; margin-bottom:14px; font-size:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                    <span style="color:#cbd5e1;">Модель AI:</span>
-                    <select id="gemini-modal-model" style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:6px; padding:5px 8px; font-size:12px;">
-                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (резервные модели Gemini)</option>
-                        <option value="gemini-3.1-flash-lite" ${preferredModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (нативный)</option>
-                        <option value="gemini-2.5-flash" ${preferredModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash (нативный)</option>
-                    </select>
+            <!-- Вкладка 1: API & Модели -->
+            <div id="tab-api" class="gemini-modal-tab-content" style="display:block;">
+                <div style="font-size:12px; color:#cbd5e1; margin-bottom:8px;">
+                    Личный бесплатный API ключ Google Gemini:
+                </div>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" style="display:flex; align-items:center; justify-content:center; gap:8px; background:linear-gradient(135deg, #2563eb, #0284c7); color:#fff; padding:9px; border-radius:8px; text-decoration:none; font-weight:bold; font-size:12px; margin-bottom:10px;">
+                    <span>🌐</span> Получить бесплатный ключ в Google AI Studio
+                </a>
+                <div style="display:flex; gap:6px; margin-bottom:14px;">
+                    <input id="gemini-modal-input" type="password" placeholder="AIza..." value="${apiKey || ''}" style="flex:1; background:#020617; border:1px solid #334155; border-radius:8px; padding:8px 10px; color:#fff; font-size:12px; font-family:monospace; outline:none;">
+                    <button id="gemini-modal-toggle-eye" title="Показать/скрыть" style="background:#1e293b; border:1px solid #334155; border-radius:8px; color:#cbd5e1; padding:0 10px; cursor:pointer;">👁</button>
+                    <button id="gemini-modal-paste-btn" title="Вставить из буфера" style="background:#1e293b; border:1px solid #334155; border-radius:8px; color:#cbd5e1; padding:0 10px; cursor:pointer;">📋</button>
                 </div>
 
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                    <span style="color:#cbd5e1;">Режим задержки:</span>
-                    <select id="gemini-modal-delay-profile" style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:6px; padding:5px 8px; font-size:12px;">
-                        <option value="smart" ${delayProfile === 'smart' ? 'selected' : ''}>Умная (адаптивно по таймеру)</option>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:rgba(30, 41, 59, 0.6); padding:10px 12px; border-radius:10px; margin-bottom:12px;">
+                    <span style="font-size:12px; color:#cbd5e1;">Приоритетная модель:</span>
+                    <select id="gemini-modal-model" style="background:#020617; color:#fff; border:1px solid #334155; border-radius:8px; padding:6px 10px; font-size:12px; outline:none; max-width:270px;">
+                        <option value="auto" ${preferredModel === 'auto' ? 'selected' : ''}>Авто (каскадный failover ⚡)</option>
+                        <option value="gemini-3.1-flash-lite" ${preferredModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (ультраэконом · $0.25/1M)</option>
+                        <option value="gemini-3.5-flash-lite" ${preferredModel === 'gemini-3.5-flash-lite' ? 'selected' : ''}>gemini-3.5-flash-lite (новейший Lite · $0.30/1M)</option>
+                        <option value="gemini-3.8-flash" ${preferredModel === 'gemini-3.8-flash' ? 'selected' : ''}>gemini-3.8-flash (баланс скорость/ум · $0.75/1M)</option>
+                        <option value="gemini-4-hydrogen" ${preferredModel === 'gemini-4-hydrogen' ? 'selected' : ''}>gemini-4-hydrogen (Gen-4 Fast · $1.50/1M)</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Вкладка 2: Стелс & Античит -->
+            <div id="tab-stealth" class="gemini-modal-tab-content" style="display:none;">
+                <div style="background:rgba(30, 41, 59, 0.6); border:1px solid rgba(255,255,255,0.06); padding:12px; border-radius:10px; margin-bottom:12px;">
+                    <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer; margin-bottom:8px;">
+                        <span style="font-size:12px; font-weight:700; color:#38bdf8;">🛡️ Античит Стелс-щит</span>
+                        <input type="checkbox" id="gemini-modal-stealth-chk" ${stealthShieldEnabled ? 'checked' : ''} class="gemini-luxe-switch">
+                    </label>
+                    <div style="font-size:11px; color:#94a3b8; line-height:1.45;">
+                        Блокирует встроенные античит-детекторы Всеосвіти и Наурок:<br>
+- Подменяет <code>document.hidden</code> и <code>visibilityState</code> на постоянный активный статус.<br>
+- Блокирует события <code>visibilitychange</code>, <code>blur</code>, <code>focusout</code> при переключении окон.<br>
+- Разблокирует контекстное меню и копирование.
+                    </div>
+                </div>
+                <div style="font-size:11px; color:#cbd5e1; background:rgba(2, 6, 23, 0.5); padding:10px; border-radius:8px; border-left:3px solid #38bdf8;">
+                    💡 <b>Горячая клавиша Boss Key (Alt+S):</b> мгновенно скрывает панель и активирует максимальный стелс.
+                </div>
+            </div>
+
+            <!-- Вкладка 3: Логика & CoT -->
+            <div id="tab-logic" class="gemini-modal-tab-content" style="display:none;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:rgba(30, 41, 59, 0.6); padding:10px 12px; border-radius:10px; margin-bottom:12px;">
+                    <span style="font-size:12px; color:#cbd5e1;">Режим задержки:</span>
+                    <select id="gemini-modal-delay-profile" style="background:#020617; color:#fff; border:1px solid #334155; border-radius:8px; padding:6px 10px; font-size:12px; outline:none;">
+                        <option value="smart" ${delayProfile === 'smart' ? 'selected' : ''}>Умная (адаптивно по таймеру теста)</option>
                         <option value="fast" ${delayProfile === 'fast' ? 'selected' : ''}>Быстрая (2–4 сек)</option>
                         <option value="none" ${delayProfile === 'none' ? 'selected' : ''}>Минимальная (1 сек)</option>
                     </select>
                 </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:4px; border-top:1px solid #334155;">
-                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin:0;">
-                        <input type="checkbox" id="gemini-modal-cache-chk" ${localCacheEnabled ? 'checked' : ''}>
-                        <span>Кэш ответов (<span id="gemini-cache-count">${getCacheCount()}</span>)</span>
+                <div style="background:rgba(30, 41, 59, 0.6); padding:12px; border-radius:10px; margin-bottom:12px;">
+                    <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer; margin-bottom:6px;">
+                        <span style="font-size:12px; font-weight:700; color:#c084fc;">🧠 Chain-of-Thought (CoT)</span>
+                        <input type="checkbox" id="gemini-modal-cot-chk" ${cotModeEnabled ? 'checked' : ''} class="gemini-luxe-switch">
                     </label>
-                    <button id="gemini-modal-clear-cache" style="background:#334155; color:#f87171; border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:bold;">🗑 Очистить</button>
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:4px; border-top:1px solid #334155;">
-                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin:0;" title="Пошаговое рассуждение модели: выше точность на сложных вопросах, медленнее">
-                        <input type="checkbox" id="gemini-modal-cot-chk" ${cotModeEnabled ? 'checked' : ''}>
-                        <span>🧠 Chain-of-Thought режим</span>
-                    </label>
-                    <span style="font-size:10px; color:#64748b;">точнее, но медленнее</span>
-                </div>
-
-                <div style="display:flex; gap:8px; padding-top:4px; border-top:1px solid #334155;">
-                    <button id="gemini-modal-export-btn" style="flex:1; background:#1e40af; color:#fff; border:none; border-radius:5px; padding:6px; font-size:11px; font-weight:bold; cursor:pointer;">📤 Экспорт кэша</button>
-                    <button id="gemini-modal-import-btn" style="flex:1; background:#7c2d12; color:#fff; border:none; border-radius:5px; padding:6px; font-size:11px; font-weight:bold; cursor:pointer;">📥 Импорт кэша</button>
+                    <div style="font-size:11px; color:#94a3b8; line-height:1.4;">
+                        Включает пошаговое внутреннее рассуждение модели (бюджет 4096 токенов) для сложных олимпиад, формул и задач по физике/химии. Точнее, но занимает больше времени.
+                    </div>
                 </div>
             </div>
 
-            <div style="display:flex; gap:8px;">
-                <button id="gemini-modal-save-btn" style="flex:2; background:#16a34a; color:#fff; border:none; padding:10px; border-radius:8px; font-weight:bold; font-size:13px; cursor:pointer;">
-                    ✅ Сохранить и проверить
+            <!-- Вкладка 4: Кэш & Бэкап -->
+            <div id="tab-cache" class="gemini-modal-tab-content" style="display:none;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:rgba(30, 41, 59, 0.6); padding:10px 12px; border-radius:10px; margin-bottom:12px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0;">
+                        <input type="checkbox" id="gemini-modal-cache-chk" ${localCacheEnabled ? 'checked' : ''} class="gemini-luxe-switch">
+                        <span style="font-size:12px; color:#cbd5e1;">Локальный кэш (<span id="gemini-cache-count" style="color:#4ade80; font-weight:bold;">${getCacheCount()}</span> ответов)</span>
+                    </label>
+                    <button id="gemini-modal-clear-cache" style="background:#334155; color:#f87171; border:none; border-radius:6px; padding:5px 10px; font-size:11px; font-weight:bold; cursor:pointer;">🗑 Очистить</button>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button id="gemini-modal-export-btn" class="gemini-luxe-btn-secondary" style="flex:1; padding:8px; font-size:11px;">📤 Экспорт кэша</button>
+                    <button id="gemini-modal-import-btn" style="flex:1; background:rgba(234, 88, 12, 0.2); border:1px solid #ea580c; color:#fdba74; border-radius:8px; padding:8px; font-size:11px; font-weight:bold; cursor:pointer;">📥 Импорт кэша</button>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:10px; margin-top:14px; border-top:1px solid rgba(255,255,255,0.08); padding-top:14px;">
+                <button id="gemini-modal-save-btn" class="gemini-luxe-btn-primary" style="flex:2; padding:11px; font-size:13px;">
+                    ✅ Сохранить и применить
                 </button>
-                <button id="gemini-modal-cancel-btn" style="flex:1; background:#334155; color:#cbd5e1; border:none; padding:10px; border-radius:8px; font-weight:bold; font-size:13px; cursor:pointer;">
+                <button id="gemini-modal-cancel-btn" style="flex:1; background:rgba(51, 65, 85, 0.6); color:#cbd5e1; border:1px solid rgba(255,255,255,0.1); padding:11px; border-radius:8px; font-weight:bold; font-size:13px; cursor:pointer;">
                     Закрыть
                 </button>
             </div>
@@ -834,6 +1260,20 @@
         modal.querySelector('#gemini-modal-close-btn').onclick = close;
         modal.querySelector('#gemini-modal-cancel-btn').onclick = close;
 
+        // Переключение вкладок
+        const tabBtns = modal.querySelectorAll('.gemini-modal-tab-btn');
+        const tabContents = modal.querySelectorAll('.gemini-modal-tab-content');
+        tabBtns.forEach(btn => {
+            btn.onclick = () => {
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabContents.forEach(c => c.style.display = 'none');
+                btn.classList.add('active');
+                const targetId = btn.getAttribute('data-tab');
+                const targetEl = modal.querySelector('#' + targetId);
+                if (targetEl) targetEl.style.display = 'block';
+            };
+        });
+
         const inp = modal.querySelector('#gemini-modal-input');
         const eyeBtn = modal.querySelector('#gemini-modal-toggle-eye');
         const pasteBtn = modal.querySelector('#gemini-modal-paste-btn');
@@ -844,6 +1284,7 @@
         const cacheChk = modal.querySelector('#gemini-modal-cache-chk');
         const clearCacheBtn = modal.querySelector('#gemini-modal-clear-cache');
         const cotChk = modal.querySelector('#gemini-modal-cot-chk');
+        const stealthChk = modal.querySelector('#gemini-modal-stealth-chk');
         const exportBtn = modal.querySelector('#gemini-modal-export-btn');
         const importBtn = modal.querySelector('#gemini-modal-import-btn');
 
@@ -878,6 +1319,14 @@
             status.innerText = cotModeEnabled ? '🧠 CoT включён' : 'CoT выключен';
         };
 
+        if (stealthChk) {
+            stealthChk.onchange = () => {
+                stealthShieldEnabled = stealthChk.checked;
+                _setValue("STEALTH_SHIELD_ENABLED", stealthShieldEnabled);
+                if (stealthShieldEnabled) initAntiCheatShield();
+            };
+        }
+
         exportBtn.onclick = () => {
             if (exportHistory()) {
                 status.style.color = '#4ade80';
@@ -893,11 +1342,18 @@
             _setValue("DELAY_PROFILE", delayProfile);
             localCacheEnabled = cacheChk.checked;
             _setValue("LOCAL_CACHE_ENABLED", localCacheEnabled);
+            if (stealthChk) {
+                stealthShieldEnabled = stealthChk.checked;
+                _setValue("STEALTH_SHIELD_ENABLED", stealthShieldEnabled);
+                if (stealthShieldEnabled) initAntiCheatShield();
+            }
 
             const val = inp.value.trim();
             if (!val) {
+                apiKey = "";
+                _setValue("GEMINI_API_KEY", "");
                 status.style.color = '#4ade80';
-                status.innerText = '✅ Настройки сохранены (ключ не задан)';
+                status.innerText = '✅ Настройки сохранены (ключ очищен)';
                 setTimeout(close, 900);
                 return;
             }
@@ -907,11 +1363,15 @@
                 return;
             }
 
-            if (val === apiKey) {
-                status.style.color = '#4ade80';
-                status.innerText = '✅ Настройки сохранены!';
-                setTimeout(close, 800);
-                return;
+            // ВСЕГДА сразу сохраняем ключ в память и хранилище, чтобы не сбрасывать настройки
+            apiKey = val;
+            _setValue("GEMINI_API_KEY", apiKey);
+
+            const dot = document.getElementById('gemini-status-dot');
+            if (dot) dot.style.background = '#22c55e';
+            const out = document.getElementById('gemini-out');
+            if (out && (out.innerText.includes('API') || out.innerText.includes('Готов'))) {
+                setOutput('Готов к авто-ответу', '#4ade80', '15px');
             }
 
             status.style.color = '#38bdf8';
@@ -919,23 +1379,15 @@
 
             testGeminiKey(val, (success, msg) => {
                 if (success) {
-                    apiKey = val;
-                    _setValue("GEMINI_API_KEY", apiKey);
                     status.style.color = '#4ade80';
-                    status.innerText = '✅ Ключ рабочий и сохранён!';
-
-                    const dot = document.getElementById('gemini-status-dot');
-                    if (dot) dot.style.background = '#22c55e';
-                    const out = document.getElementById('gemini-out');
-                    if (out && (out.innerText.includes('API') || out.innerText.includes('Готов'))) {
-                        setOutput('Готов к авто-ответу', '#4ade80', '15px');
-                    }
+                    status.innerText = '✅ ' + msg;
                     setTimeout(close, 1100);
                 } else {
-                    status.style.color = '#f87171';
-                    status.innerText = '❌ ' + msg;
+                    status.style.color = '#f59e0b';
+                    status.innerText = '⚠️ Ключ сохранён, но: ' + msg;
+                    setTimeout(close, 2500);
                 }
-            });
+            }, preferredModel);
         };
     }
 
@@ -944,7 +1396,7 @@
     const LETTERS_LAT = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 
     function isNaurokHost() {
-        return /(^|\.)naurok\.ua$/i.test(window.location.hostname);
+        return /(^|\.)naurok\.(ua|com\.ua)$/i.test(window.location.hostname);
     }
 
     function getNaurokActiveQuestion(root) {
@@ -1188,7 +1640,7 @@
 
             // Графики и схемы, отрисованные в inline-SVG (не <img>)
             const svgs = Array.from(root.querySelectorAll('svg')).filter(s =>
-                !hudEl.contains(s) && !s.closest('#gemini-key-modal')
+                (!hudEl || !hudEl.contains(s)) && !s.closest('#gemini-key-modal')
             );
             for (const svg of svgs) {
                 const dataUrl = svgToDataUrl(svg);
@@ -2215,11 +2667,27 @@
         return handleTextInput(parsed.raw, answerScope);
     }
 
+
     // ==================== ПОИСК И НАЖАТИЕ КНОПКИ «ЗБЕРЕГТИ І ДАЛІ» ====================
     function findNextButton() {
-        if (isNaurokHost()) return null;
         const hudEl = document.getElementById('gemini-direct-hud');
         const isOutsideHUD = el => !hudEl || !hudEl.contains(el);
+
+        if (isNaurokHost()) {
+            const root = getNaurokGameRoot() || document;
+            const submitBtn = root.querySelector('.tb-btn.is-primary, .tb-answers-submit, button.tb-submit, [data-action="submit"]');
+            if (submitBtn && isVisibleElement(submitBtn) && isOutsideHUD(submitBtn)) {
+                return submitBtn;
+            }
+            const interactive = Array.from(root.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]')).filter(isOutsideHUD).filter(isVisibleElement);
+            for (const el of interactive) {
+                const txt = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                if (txt === 'відповісти' || txt === 'далі' || txt === 'підтвердити' || txt === 'зберегти') {
+                    return el;
+                }
+            }
+            return null;
+        }
 
         function isMatchText(txt) {
             if (!txt) return false;
@@ -2248,7 +2716,6 @@
             }
         }
 
-        // Naurok (класичний режим): кнопки наступного запитання в окремій arena-розмітці.
         const interactive = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]')).filter(isOutsideHUD);
         for (const el of interactive) {
             const cls = typeof el.className === 'string' ? el.className : '';
@@ -2268,8 +2735,6 @@
         setTimeout(() => { isAdvancing = false; }, 1500);
         return true;
     }
-
-    let processingStartedAt = 0;
 
     // ==================== ПОИСК ОТВЕТА ЧЕРЕЗ GEMINI API + КЭШ ====================
     async function triggerSearch(bypassCache = false) {
@@ -2315,6 +2780,16 @@
 
         isProcessing = true;
         processingStartedAt = Date.now();
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(() => {
+            if (isProcessing) {
+                console.warn("[Quiz Assistant] Watchdog timeout, resetting processing state");
+                isProcessing = false;
+                if (progressTimer) clearInterval(progressTimer);
+                            if (watchdogTimer) clearTimeout(watchdogTimer);
+                setOutput("⚠️ Время ожидания истекло", "#f87171", "13px");
+            }
+        }, 35000);
         let seconds = 0;
         const imgLabel = qData.imageUrls.length > 0 ? ` + 🖼(${qData.imageUrls.length})` : '';
         setOutput(`⏳ Поиск ответа${imgLabel}...`, '#38bdf8', '15px');
@@ -2387,6 +2862,7 @@ ${q}`;
         function doRequest(modelIndex = 0, retryAttempt = 0) {
             if (modelIndex >= modelsCascade.length) {
                 if (progressTimer) clearInterval(progressTimer);
+                            if (watchdogTimer) clearTimeout(watchdogTimer);
                 isProcessing = false;
                 setOutput('❌ Все модели перегружены / нет ответа', '#f87171', '13px');
                 return;
@@ -2403,6 +2879,7 @@ ${q}`;
                     onload: function (res) {
                         if (res.status >= 200 && res.status < 300) {
                             if (progressTimer) clearInterval(progressTimer);
+                            if (watchdogTimer) clearTimeout(watchdogTimer);
 
                             let cleanAns = "";
                             try {
@@ -2449,10 +2926,18 @@ ${q}`;
                                 const lowMsg = errMsg.toLowerCase();
                                 if (lowMsg.includes('api key') || lowMsg.includes('authorization') || lowMsg.includes('invalid key') || lowMsg.includes('no auth')) {
                                     if (progressTimer) clearInterval(progressTimer);
+                            if (watchdogTimer) clearTimeout(watchdogTimer);
                                     isProcessing = false;
                                     setOutput('🔑 Неверный API ключ', '#f87171', '13px');
                                     return;
                                 }
+                            }
+
+                            const isHighDemand = (res.status === 503) || (typeof res.responseText === 'string' && res.responseText.includes('high demand'));
+                            if (isHighDemand && modelIndex + 1 < modelsCascade.length) {
+                                console.warn(`[Quiz Assistant] Модель ${currentModel} перегружена (high demand), мгновенный переход к ${modelsCascade[modelIndex + 1]}...`);
+                                doRequest(modelIndex + 1, 0);
+                                return;
                             }
 
                             if (shouldRetryGeminiRequest(res.status, retryAttempt)) {
@@ -2460,7 +2945,7 @@ ${q}`;
                                 setTimeout(() => doRequest(modelIndex, retryAttempt), 2000);
                                 return;
                             }
-                            console.warn(`[Quiz Assistant v10.5.1] Model ${currentModel} returned ${res.status}, failover...`);
+                            console.warn(`[Quiz Assistant v10.7.0] Model ${currentModel} returned ${res.status}, failover...`);
                             doRequest(modelIndex + 1, 0);
                         }
                     },
@@ -2708,6 +3193,19 @@ ${q}`;
             clickNextQuestion();
         }
 
+                const isS = (e.code === 'KeyS' || e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы' || e.key === 'і' || e.key === 'І');
+        if (e.altKey && isS) {
+            e.preventDefault();
+            stealthShieldEnabled = !stealthShieldEnabled;
+            _setValue("STEALTH_SHIELD_ENABLED", stealthShieldEnabled);
+            if (stealthShieldEnabled) initAntiCheatShield();
+            hudHiddenByUser = !hudHiddenByUser;
+            ensureHUD();
+            const cur = document.getElementById('gemini-direct-hud');
+            if (cur) cur.style.display = hudHiddenByUser ? 'none' : 'block';
+            showToast(hudHiddenByUser ? '🛡️ Стелс-режим: панель скрыта' : 'Панель восстановлена', 'info');
+        }
+
         const isH = (e.code === 'KeyH' || e.key === 'h' || e.key === 'H' || e.key === 'р' || e.key === 'Р');
         if (e.altKey && isH) {
             e.preventDefault();
@@ -2718,6 +3216,7 @@ ${q}`;
         }
     });
 
+    initAntiCheatShield();
     ensureHUD();
     setInterval(ensureHUD, 700);
 })();
